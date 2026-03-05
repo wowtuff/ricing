@@ -1,0 +1,1 @@
+openai error: POST "https://openrouter.ai/api/v1/chat/completions": 401 Unauthorized {"message":"Missing Authentication header","code":401}
