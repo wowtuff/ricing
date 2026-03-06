@@ -8,3 +8,7 @@ openai error: POST "https://api.openai.com/v1/chat/completions": 401 Unauthorize
 websocket dial error: websocket: bad handshake
 websocket dial error: websocket: bad handshake
 websocket dial error: websocket: bad handshake
+openai error: Post "https://openrouter.ai/api/v1/chat/completions": proxyconnect tcp: dial tcp 127.0.0.1:8082: connectex: No connection could be made because the target machine actively refused it.
+openai error: Post "https://openrouter.ai/api/v1/chat/completions": tls: failed to verify certificate: x509: certificate signed by unknown authority
+openai error: Post "https://api.openai.com/v1/chat/completions": tls: failed to verify certificate: x509: certificate signed by unknown authority
+openai error: Post "https://api.openai.com/v1/chat/completions": tls: failed to verify certificate: x509: certificate signed by unknown authority

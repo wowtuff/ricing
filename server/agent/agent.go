@@ -15,8 +15,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
+	"github.com/gorilla/websocket"
 	"github.com/wowtuff/ricing/tools"
 	"github.com/wowtuff/ricing/utils"
 )
@@ -28,77 +27,206 @@ const (
 	redirectURI    = "http://localhost:1455/auth/callback"
 	scopes         = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 	tokenCachePath = "$HOME/.codex/auth.json"
+	wsEndpoint     = "wss://chatgpt.com/backend-api/codex/responses"
 )
 
+// stores tokens in the openai way
 type authDotJson struct {
 	Tokens *tokenData `json:"tokens"`
 }
 
+// token payload
 type tokenData struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IdToken      string `json:"id_token"`
 }
 
+// what we get back from the oauth token endpoint
 type oauthResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IdToken      string `json:"id_token"`
 }
 
-// https://pkg.go.dev/github.com/openai/openai-go/v3#section-readme
+// the request we send over websocket
+type wsRequest struct {
+	Type               string      `json:"type"`
+	Model              string      `json:"model"`
+	Instructions       string      `json:"instructions"`
+	PreviousResponseID *string     `json:"previous_response_id,omitempty"`
+	Input              []inputItem `json:"input"`
+	Tools              []any       `json:"tools"`
+	ToolChoice         string      `json:"tool_choice"`
+	ParallelToolCalls  bool        `json:"parallel_tool_calls"`
+	Store              bool        `json:"store"`
+	Stream             bool        `json:"stream"`
+	Include            []string    `json:"include"`
+}
+
+// input
+type inputItem struct {
+	Type    string         `json:"type"`
+	Role    string         `json:"role,omitempty"`
+	Content []inputContent `json:"content,omitempty"`
+	CallID  string         `json:"call_id,omitempty"`
+	Output  string         `json:"output,omitempty"`
+}
+
+// the actual text content inside an inputItem
+type inputContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// events coming in from the websocket
+type wsEvent struct {
+	Type     string          `json:"type"`
+	Delta    string          `json:"delta,omitempty"`
+	Item     json.RawMessage `json:"item,omitempty"`
+	Response json.RawMessage `json:"response,omitempty"`
+}
+
+// represents a function call that the model wants to make
+type functionCallItem struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// the payload when a response is done
+type responseCompleted struct {
+	ID string `json:"id"`
+}
+
+// the main event
 func Run(ctx context.Context, reg *tools.Registry, userPrompt string) (string, error) {
+	// reads from the env
 	token, err := getOrRefreshToken(ctx)
 	if err != nil {
 		return "", utils.LogError("auth error: %s", err)
 	}
 
-	// reads from the env
-	client := openai.NewClient(
-		option.WithAPIKey(token),
-		option.WithBaseURL("https://openrouter.ai/api/v1"), // comment when actual api key to be used
-	)
-	Tools := buildToolSet(reg)
-
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("You are a smart agent, you provide solutions to user prompts, with no outside knowledge but from the toolset provided to you"),
-		openai.UserMessage(userPrompt),
+	originator := os.Getenv("CODEX_ORIGINATOR")
+	if originator == "" {
+		originator = "codex_cli_rs"
 	}
 
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+	headers.Set("Origin", "https://chatgpt.com")
+	headers.Set("User-Agent", "codex-cli-rs/0.1.0")
+	headers.Set("originator", originator)
+	if residency := os.Getenv("REQUIREMENTS_RESIDENCY"); residency != "" {
+		headers.Set("x-openai-internal-codex-residency", residency)
+	}
+	// debugging logs
+	fmt.Println("connecting to websocket...")
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsEndpoint, headers)
+	if err != nil {
+		if resp != nil {
+			return "", utils.LogError("websocket dial error: %s | status: %d", err, resp.StatusCode)
+		}
+		return "", utils.LogError("websocket dial error: %s", err)
+	}
+	fmt.Println("connected!")
+	defer conn.Close()
+
+	toolSpecs := buildToolSpecs(reg)
+	var previousResponseID *string
+	input := []inputItem{
+		{
+			Type:    "message",
+			Role:    "user",
+			Content: []inputContent{{Type: "input_text", Text: userPrompt}},
+		},
+	}
+	// agent request
 	for {
-		completion, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-			Model:    openai.ChatModelGPT4o,
-			Messages: messages,
-			Tools:    Tools,
-			// MaxTokens: openai.Int(512), //if you using free 4o from openrouter uncomment this, can be removed later once we use our api key
-		})
-		if err != nil {
-			return "", utils.LogError("openai error: %s", err)
+		req := wsRequest{
+			Type:               "response.create",
+			Model:              "gpt-5.2-codex",
+			Instructions:       "You are a smart agent, you provide solutions to user prompts, with no outside knowledge but from the toolset provided to you",
+			PreviousResponseID: previousResponseID,
+			Input:              input,
+			Tools:              toolSpecs,
+			ToolChoice:         "auto",
+			ParallelToolCalls:  true,
+			Store:              false,
+			Stream:             true,
+			Include:            []string{},
 		}
 
-		choice := completion.Choices[0]
+		if err := conn.WriteJSON(req); err != nil {
+			return "", utils.LogError("websocket write error: %s", err)
+		}
+		fmt.Println("request sent, waiting for response...")
+		var outputText strings.Builder
+		var pendingToolCalls []functionCallItem
+		var responseID string
+		done := false
 
-		if len(choice.Message.ToolCalls) == 0 {
-			return choice.Message.Content, nil
+		for !done {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return "", utils.LogError("websocket read error: %s", err)
+			}
+			fmt.Printf("raw event: %s\n", string(msg))
+			var event wsEvent
+			if err := json.Unmarshal(msg, &event); err != nil {
+				continue
+			}
+
+			switch event.Type {
+			case "response.output_text.delta":
+				outputText.WriteString(event.Delta)
+
+			case "response.output_item.done":
+				var item functionCallItem
+				if err := json.Unmarshal(event.Item, &item); err == nil && item.Type == "function_call" {
+					pendingToolCalls = append(pendingToolCalls, item)
+				}
+
+			case "response.completed":
+				var resp responseCompleted
+				if err := json.Unmarshal(event.Response, &resp); err == nil {
+					responseID = resp.ID
+				}
+				done = true
+
+			case "response.failed", "response.incomplete":
+				return "", utils.LogError("response error event: %s", event.Type)
+			}
 		}
 
-		messages = append(messages, choice.Message.ToParam())
+		if len(pendingToolCalls) == 0 {
+			return outputText.String(), nil
+		}
 
-		for _, tc := range choice.Message.ToolCalls {
+		input = []inputItem{}
+		for _, tc := range pendingToolCalls {
 			result := executeTool(ctx, reg, tc)
-			messages = append(messages, openai.ToolMessage(result, tc.ID))
+			input = append(input, inputItem{
+				Type:   "function_call_output",
+				CallID: tc.CallID,
+				Output: result,
+			})
 		}
+		previousResponseID = &responseID
 	}
 }
 
-func executeTool(ctx context.Context, reg *tools.Registry, tc openai.ChatCompletionMessageToolCallUnion) string {
-	tool, err := reg.Get(tc.Function.Name)
+// finds the tool, parses args, runs it, returns the result as json string
+func executeTool(ctx context.Context, reg *tools.Registry, tc functionCallItem) string {
+	tool, err := reg.Get(tc.Name)
 	if err != nil {
 		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
 	}
 
 	var args map[string]any
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
 		return fmt.Sprintf(`{"error": "bad arguments: %s"}`, err.Error())
 	}
 
@@ -112,21 +240,21 @@ func executeTool(ctx context.Context, reg *tools.Registry, tc openai.ChatComplet
 }
 
 // go openai sdk's version of JSON list of tools
-func buildToolSet(reg *tools.Registry) []openai.ChatCompletionToolUnionParam {
+func buildToolSpecs(reg *tools.Registry) []any {
 	specs := reg.List()
-	out := make([]openai.ChatCompletionToolUnionParam, 0, len(specs))
-
+	out := make([]any, 0, len(specs))
 	for _, spec := range specs {
-		out = append(out, openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
-			Name:        spec.Name,
-			Description: openai.String(spec.Description),
-			Parameters:  openai.FunctionParameters(spec.ParamSchema),
-		}))
+		out = append(out, map[string]any{
+			"type":        "function",
+			"name":        spec.Name,
+			"description": spec.Description,
+			"parameters":  spec.ParamSchema,
+		})
 	}
-
 	return out
 }
 
+// tries to use cached token first, falls back to full login flow if needed
 func getOrRefreshToken(ctx context.Context) (string, error) {
 	if token, err := loadCachedToken(); err == nil {
 		return token, nil
@@ -134,6 +262,7 @@ func getOrRefreshToken(ctx context.Context) (string, error) {
 	return loginFlow(ctx)
 }
 
+// the full oauth flow
 func loginFlow(ctx context.Context) (string, error) {
 	verifier := generateVerifier()
 	challenge := generateChallenge(verifier)
@@ -169,7 +298,8 @@ func loginFlow(ctx context.Context) (string, error) {
 		server.Serve(listener)
 	}()
 
-	fmt.Println("opening browser for login")
+	fmt.Println("opening browser for login...")
+	fmt.Println(authURL)
 	openBrowser(authURL)
 
 	var code string
@@ -185,6 +315,7 @@ func loginFlow(ctx context.Context) (string, error) {
 	return exchangeCode(ctx, code, verifier)
 }
 
+// swaps the auth code for actual access token
 func exchangeCode(ctx context.Context, code, verifier string) (string, error) {
 	resp, err := http.PostForm(openaiTokenURL, url.Values{
 		"grant_type":    {"authorization_code"},
@@ -210,16 +341,20 @@ func exchangeCode(ctx context.Context, code, verifier string) (string, error) {
 	return oauthResp.AccessToken, nil
 }
 
+// generates a random string for pkce
 func generateVerifier() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// hashes the verifier to create the challenge
 func generateChallenge(verifier string) string {
 	h := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
+
+// saves oauth token
 func cacheToken(oauthResp oauthResponse) error {
 	path := os.ExpandEnv(tokenCachePath)
 	if err := os.MkdirAll(strings.TrimSuffix(path, "/auth.json"), 0700); err != nil {
@@ -238,6 +373,8 @@ func cacheToken(oauthResp oauthResponse) error {
 	}
 	return os.WriteFile(path, data, 0600)
 }
+
+// loads the saved oauth token
 func loadCachedToken() (string, error) {
 	path := os.ExpandEnv(tokenCachePath)
 	data, err := os.ReadFile(path)
@@ -253,6 +390,8 @@ func loadCachedToken() (string, error) {
 	}
 	return auth.Tokens.AccessToken, nil
 }
+
+// what do i even explain here, literally does what the func says
 func openBrowser(url string) {
 	switch runtime.GOOS {
 	case "windows":
