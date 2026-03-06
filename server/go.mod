@@ -2,7 +2,7 @@ module github.com/wowtuff/ricing
 
 go 1.25.6
 
-require github.com/openai/openai-go/v3 v3.24.0
+require github.com/openai/openai-go/v3 v3.26.0
 
 require (
 	github.com/tidwall/gjson v1.18.0 // indirect
