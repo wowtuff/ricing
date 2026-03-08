@@ -140,7 +140,7 @@ func (s *RunService) execute(st *runState) {
 			st.appendDelta(text)
 			st.publish("assistant.delta", map[string]any{"text": text})
 		},
-		OnToolCall: func(call agent.ToolCall) {
+		OnToolCall: func(call agent.StreamToolCall) {
 			st.publish("tool.call", map[string]any{
 				"tool_call_id": call.ID,
 				"call_id":      call.CallID,

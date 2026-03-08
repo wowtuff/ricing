@@ -15,7 +15,7 @@ type RunOptions struct {
 	Model string
 }
 
-type ToolCall struct {
+type StreamToolCall struct {
 	ID        string
 	CallID    string
 	Name      string
@@ -30,7 +30,7 @@ type ToolResult struct {
 
 type StreamSink struct {
 	OnDelta      func(text string)
-	OnToolCall   func(call ToolCall)
+	OnToolCall   func(call StreamToolCall)
 	OnToolResult func(res ToolResult)
 }
 
@@ -69,12 +69,12 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 	}
 	defer conn.Close()
 
-	toolSpecs := buildToolSpecs(reg)
+	toolSpecs := buildWSToolSpecs(reg.List())
 	var previousResponseID *string
-	input := []inputItem{{
+	input := []wsInput{{
 		Type:    "message",
 		Role:    "user",
-		Content: []inputContent{{Type: "input_text", Text: userPrompt}},
+		Content: []wsContent{{Type: "input_text", Text: userPrompt}},
 	}}
 
 	for {
@@ -96,7 +96,7 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 			return utils.LogError("websocket write error: %s", err)
 		}
 
-		var pendingToolCalls []functionCallItem
+		var pendingToolCalls []wsFunctionCallItem
 		var responseID string
 		done := false
 
@@ -117,13 +117,13 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 				}
 
 			case "response.output_item.done":
-				var item functionCallItem
+				var item wsFunctionCallItem
 				if err := json.Unmarshal(event.Item, &item); err == nil && item.Type == "function_call" {
 					pendingToolCalls = append(pendingToolCalls, item)
 				}
 
 			case "response.completed":
-				var resp responseCompleted
+				var resp wsResponseCompleted
 				if err := json.Unmarshal(event.Response, &resp); err == nil {
 					responseID = resp.ID
 				}
@@ -138,20 +138,20 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 			return nil
 		}
 
-		input = []inputItem{}
+		input = []wsInput{}
 		for _, tc := range pendingToolCalls {
 			var args map[string]any
 			_ = json.Unmarshal([]byte(tc.Arguments), &args)
 			if sink.OnToolCall != nil {
-				sink.OnToolCall(ToolCall{ID: tc.ID, CallID: tc.CallID, Name: tc.Name, Arguments: args})
+				sink.OnToolCall(StreamToolCall{ID: tc.ID, CallID: tc.CallID, Name: tc.Name, Arguments: args})
 			}
-			resultJSON := executeTool(ctx, reg, tc)
+			resultJSON := executeToolByName(ctx, reg, ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments})
 			var out any
 			_ = json.Unmarshal([]byte(resultJSON), &out)
 			if sink.OnToolResult != nil {
 				sink.OnToolResult(ToolResult{ToolCallID: tc.ID, CallID: tc.CallID, Output: out})
 			}
-			input = append(input, inputItem{Type: "function_call_output", CallID: tc.CallID, Output: resultJSON})
+			input = append(input, wsInput{Type: "function_call_output", CallID: tc.CallID, Output: resultJSON})
 		}
 		previousResponseID = &responseID
 	}
