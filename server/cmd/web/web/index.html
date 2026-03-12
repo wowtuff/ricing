@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ricing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #08080a;
+      --bg-base: #0c0c0f;
+      --bg-elevated: #141419;
+      --bg-hover: #1a1a22;
+      --border-subtle: #1e1e28;
+      --border-active: #2a2a3a;
+      --text-primary: #f0f0f5;
+      --text-secondary: #8888a0;
+      --text-dim: #4a4a5a;
+      --accent-primary: #ff6b35;
+      --accent-secondary: #ff8c5a;
+      --accent-glow: rgba(255, 107, 53, 0.3);
+      --success: #35ff6b;
+      --error: #ff355a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(8, 8, 10, 0.8);
+      backdrop-filter: blur(12px);
+    }
+
+    header h1 {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 18px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    header h1 span { color: var(--accent-primary); }
+    header h1 .cursor {
+      color: var(--accent-primary);
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      padding: 6px 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .status-badge:hover {
+      border-color: var(--accent-primary);
+      color: var(--text-primary);
+    }
+
+    .status-badge.connected {
+      border-color: var(--border-subtle);
+      color: var(--text-primary);
+    }
+
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #chat::-webkit-scrollbar { width: 4px; }
+    #chat::-webkit-scrollbar-track { background: transparent; }
+    #chat::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
+
+    .message {
+      max-width: 700px;
+      padding: 14px 18px;
+      border-radius: 10px;
+      line-height: 1.5;
+      animation: msgIn 0.2s ease;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @keyframes msgIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      background: transparent;
+      border-left: 3px solid var(--accent-primary);
+      padding-left: 15px;
+    }
+
+    .message.system {
+      align-self: center;
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 13px;
+      font-style: italic;
+      text-align: center;
+      padding: 8px;
+    }
+
+    .message.tool {
+      align-self: flex-start;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      font-size: 13px;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .message.error {
+      border-left-color: var(--error);
+      color: var(--error);
+    }
+
+    #input-area {
+      padding: 16px 24px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      gap: 12px;
+      background: rgba(8, 8, 10, 0.8);
+      backdrop-filter: blur(12px);
+      position: relative;
+    }
+
+    #input-area::before {
+      content: '';
+      position: absolute;
+      top: -1px;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+      opacity: 0.5;
+    }
+
+    #prompt {
+      flex: 1;
+      padding: 14px 18px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    #prompt:focus {
+      border-color: var(--accent-primary);
+      background: var(--bg-hover);
+    }
+
+    #prompt::placeholder { color: var(--text-dim); }
+
+    button {
+      padding: 14px 24px;
+      background: var(--accent-primary);
+      color: var(--bg-deep);
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    button:hover {
+      background: var(--accent-secondary);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px var(--accent-glow);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    #setup {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      backdrop-filter: blur(8px);
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .setup-box {
+      background: var(--bg-elevated);
+      padding: 40px;
+      border-radius: 16px;
+      width: 440px;
+      border: 1px solid var(--border-subtle);
+      position: relative;
+      animation: slideUp 0.3s ease;
+    }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .setup-box::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+    }
+
+    .setup-box h2 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .setup-box > p {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-bottom: 28px;
+    }
+
+    .field { margin-bottom: 20px; }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 500;
+    }
+
+    .field select, .field input {
+      width: 100%;
+      padding: 14px 16px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .field select:focus, .field input:focus {
+      border-color: var(--accent-primary);
+      background: var(--bg-hover);
+    }
+
+    .field select {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238888a0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+    }
+
+    .oauth-btn {
+      width: 100%;
+      padding: 14px 16px;
+      background: linear-gradient(135deg, #10a37f 0%, #1a7f64 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .oauth-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(16, 163, 127, 0.3);
+    }
+
+    .field-group {
+      display: none;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .field-group.show { display: block; }
+
+    .setup-box button.primary {
+      width: 100%;
+      margin-top: 12px;
+      padding: 16px;
+      font-size: 14px;
+    }
+
+    .setup-box button.secondary {
+      width: 100%;
+      margin-top: 12px;
+      padding: 14px;
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .setup-box button.secondary:hover {
+      border-color: var(--text-secondary);
+      color: var(--text-primary);
+      background: transparent;
+      box-shadow: none;
+      transform: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span>r</span>icing<span class="cursor">_</span></h1>
+    <div class="status-badge" id="statusBadge" onclick="showSetup()">
+      <span id="statusText">not linked</span>
+    </div>
+  </header>
+
+  <div id="chat"></div>
+
+  <div id="input-area">
+    <input id="prompt" placeholder="what do you want to build?" />
+    <button id="send">send</button>
+  </div>
+
+  <div id="setup">
+    <div class="setup-box">
+      <h2>model setup</h2>
+      <p>choose your model and enter your credentials</p>
+
+      <div class="field">
+        <label>provider</label>
+        <select id="provider" onchange="updateFields()">
+          <option value="chatgpt">chatgpt (oauth)</option>
+          <option value="openai">openai api</option>
+          <option value="anthropic">anthropic api</option>
+          <option value="gemini">google gemini</option>
+          <option value="openrouter">openrouter</option>
+          <option value="ollama">ollama (local)</option>
+          <option value="lmstudio">lm studio (local)</option>
+        </select>
+      </div>
+
+      <div class="field" id="api-key-field">
+        <label>api key</label>
+        <input type="password" id="apiKey" placeholder="sk-..." />
+      </div>
+
+      <div class="field" id="oauth-field" style="display: none;">
+        <button type="button" class="oauth-btn" onclick="startOAuth()">connect with chatgpt</button>
+      </div>
+
+      <div class="field" id="model-field">
+        <label>model</label>
+        <input type="text" id="model" placeholder="model name" />
+      </div>
+
+      <div class="field field-group" id="url-field">
+        <label>server url</label>
+        <input type="text" id="url" placeholder="http://localhost:11434/v1" />
+      </div>
+
+      <button class="primary" onclick="saveConfig()">let's go</button>
+      <button class="secondary" onclick="closeSetup()">cancel</button>
+    </div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const prompt = document.getElementById('prompt');
+    const sendBtn = document.getElementById('send');
+    const setup = document.getElementById('setup');
+    const statusBadge = document.getElementById('statusBadge');
+    const statusText = document.getElementById('statusText');
+
+    let config = null;
+
+    const defaults = {
+      chatgpt:    { model: 'gpt-5.2-codex' },
+      openai:     { model: 'gpt-4o' },
+      anthropic:  { model: 'claude-sonnet-4-20250514' },
+      gemini:     { model: 'gemini-2.0-flash' },
+      openrouter: { model: 'openai/gpt-4o' },
+      ollama:     { url: 'http://localhost:11434/v1', model: '' },
+      lmstudio:   { url: 'http://localhost:1234/v1',  model: '' }
+    };
+
+    function updateFields(clear = true) {
+      const provider = document.getElementById('provider').value;
+      const isLocal = provider === 'ollama' || provider === 'lmstudio';
+      const isOAuth = provider === 'chatgpt';
+
+      if (clear) {
+        document.getElementById('apiKey').value = '';
+        document.getElementById('model').value = '';
+        document.getElementById('url').value = '';
+      }
+
+      document.getElementById('api-key-field').style.display = (isLocal || isOAuth) ? 'none' : 'block';
+      document.getElementById('oauth-field').style.display = isOAuth ? 'block' : 'none';
+      document.getElementById('url-field').classList.toggle('show', isLocal);
+
+      const def = defaults[provider] || {};
+      document.getElementById('model').placeholder = def.model || 'model name';
+      document.getElementById('url').placeholder = def.url || 'http://localhost:11434/v1';
+    }
+
+    async function startOAuth() {
+      try {
+        const res = await fetch('http://127.0.0.1:1777/api/v1/providers');
+        const data = await res.json();
+        const provider = data.default_provider_id;
+
+        const connectRes = await fetch('http://127.0.0.1:1777/api/v1/providers/' + provider + '/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ open_browser: false })
+        });
+        const connectData = await connectRes.json();
+        if (connectData.auth_url) {
+          window.open(connectData.auth_url, '_blank', 'width=600,height=700');
+          addMessage('system', 'OAuth window opened. Complete the login, then come back here.');
+          pollForConnection(provider);
+        } else {
+          addMessage('system', connectData.error?.message || 'failed to start OAuth');
+        }
+      } catch (e) {
+        addMessage('system', 'OAuth error: ' + e.message);
+      }
+    }
+
+    async function pollForConnection(provider) {
+      addMessage('system', 'waiting for OAuth completion...');
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const res = await fetch('http://127.0.0.1:1777/api/v1/providers');
+          const data = await res.json();
+          const prov = data.providers?.find(p => p.id === provider);
+          if (prov?.state === 'connected') {
+            config = { backend: 'chatgpt', apiKey: '', model: 'gpt-5.2-codex', url: '', isOAuth: true };
+            localStorage.setItem('ricing-config', JSON.stringify(config));
+            updateStatus(true);
+            closeSetup();
+            addMessage('system', 'OAuth connected. You can now chat.');
+            return;
+          }
+        } catch (e) {
+
+        }
+      }
+      addMessage('system', 'OAuth timed out. Try again.');
+    }
+
+    function closeSetup() {
+      setup.style.display = 'none';
+    }
+
+    function showSetup() {
+      setup.style.display = 'flex';
+      if (config) {
+        document.getElementById('provider').value = config.backend;
+      } else {
+        document.getElementById('provider').value = 'chatgpt';
+        document.getElementById('apiKey').value = '';
+        document.getElementById('model').value = '';
+        document.getElementById('url').value = '';
+      }
+      updateFields(false);
+    }
+
+    async function saveConfig() {
+      const provider = document.getElementById('provider').value;
+      const isOAuth = provider === 'chatgpt';
+      const apiKey = isOAuth ? '' : document.getElementById('apiKey').value;
+      const model = document.getElementById('model').value || defaults[provider]?.model || '';
+      const url = document.getElementById('url').value || defaults[provider]?.url || '';
+
+      config = { backend: provider, apiKey, model, url, isOAuth };
+      localStorage.setItem('ricing-config', JSON.stringify(config));
+      setup.style.display = 'none';
+      updateStatus(!isOAuth);
+      addMessage('system', `linked to ${provider}${model ? ' (' + model + ')' : ''}`);
+
+      if (isOAuth) {
+        addMessage('system', 'OAuth connected. You can now chat.');
+        return;
+      }
+
+      try {
+        const res = await fetch('http://127.0.0.1:1777/api/v1/providers/' + provider + '/ping', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, api_key: apiKey, url })
+        });
+        const data = await res.json();
+        if (res.ok && data.reply) {
+          addMessage('assistant', data.reply);
+        } else {
+          addMessage('system', data.error?.message || 'ping failed');
+        }
+      } catch (e) {
+        addMessage('system', 'could not ping: ' + e.message);
+      }
+    }
+
+    function updateStatus(isConnected) {
+      statusBadge.classList.toggle('connected', isConnected);
+      statusText.textContent = isConnected ? (config?.model || 'linked') : 'not linked';
+    }
+
+    function addMessage(role, content) {
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      div.textContent = content;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function enableInput() {
+      sendBtn.disabled = false;
+      prompt.disabled = false;
+      prompt.focus();
+    }
+
+    async function send() {
+      const text = prompt.value.trim();
+      if (!text || !config) return;
+
+      prompt.value = '';
+      addMessage('user', text);
+      sendBtn.disabled = true;
+      prompt.disabled = true;
+
+      let thinkingEl = addMessage('assistant', '...');
+
+      try {
+        const res = await fetch('http://127.0.0.1:1777/api/v1/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: text,
+            mode: 'auto',
+            llm: {
+              provider_id: '',
+              model: config.model,
+              api_key: config.apiKey,
+              url: config.url
+            }
+          })
+        });
+
+        const data = await res.json();
+
+        if (res.status === 409 || data.error?.code === 'provider_not_connected') {
+          thinkingEl.remove();
+          addMessage('system', 'not linked. click the badge at the top to configure.');
+          showSetup();
+          enableInput();
+          return;
+        }
+
+        if (!res.ok) {
+          thinkingEl.remove();
+          const errEl = addMessage('assistant', data.error?.message || JSON.stringify(data));
+          errEl.classList.add('error');
+          enableInput();
+          return;
+        }
+
+        const runID = data.run.id;
+        const wsUrl = 'ws://127.0.0.1:1777' + data.ws_url;
+        const ws = new WebSocket(wsUrl);
+        let responseText = '';
+        let streaming = false;
+
+        ws.onopen = () => {
+
+          ws.send(JSON.stringify({
+            type: 'subscribe',
+            data: { run_id: runID, after_seq: 0 }
+          }));
+        };
+
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === 'assistant.delta') {
+            const delta = msg.data?.text ?? '';
+            if (!streaming) {
+
+              thinkingEl.textContent = '';
+              streaming = true;
+            }
+            responseText += delta;
+            thinkingEl.textContent = responseText;
+            chat.scrollTop = chat.scrollHeight;
+          }
+
+          if (msg.type === 'tool.call') {
+            addMessage('tool', `tool: ${msg.data?.name}(${JSON.stringify(msg.data?.arguments ?? {})})`);
+          }
+
+          if (msg.type === 'error') {
+            thinkingEl.remove();
+            const errEl = addMessage('assistant', msg.data?.message || 'error');
+            errEl.classList.add('error');
+            ws.close();
+          }
+
+          if (msg.type === 'run.completed') {
+            if (!streaming) {
+
+              const finalText = msg.data?.result?.output_text || '';
+              if (finalText) {
+                thinkingEl.textContent = finalText;
+              } else {
+                thinkingEl.remove();
+              }
+            }
+            ws.close();
+          }
+        };
+
+        ws.onclose = () => {
+          enableInput();
+        };
+
+        ws.onerror = () => {
+          thinkingEl.remove();
+          const errEl = addMessage('assistant', 'connection error');
+          errEl.classList.add('error');
+          enableInput();
+        };
+
+      } catch (e) {
+        thinkingEl.remove();
+        const errEl = addMessage('assistant', 'error: ' + e.message);
+        errEl.classList.add('error');
+        enableInput();
+      }
+    }
+
+    sendBtn.onclick = send;
+    prompt.onkeydown = (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    };
+
+    async function init() {
+      const saved = localStorage.getItem('ricing-config');
+      if (saved) {
+        try { config = JSON.parse(saved); } catch (_) {}
+      }
+
+      try {
+        const res = await fetch('http://127.0.0.1:1777/api/v1/providers');
+        const data = await res.json();
+        const connectedProvider = data.providers?.find(p => p.state === 'connected');
+        if (connectedProvider) {
+          if (!config) {
+            config = { backend: 'chatgpt', apiKey: '', model: 'gpt-5.2-codex', url: '', isOAuth: true };
+            localStorage.setItem('ricing-config', JSON.stringify(config));
+          }
+          updateStatus(true);
+          setup.style.display = 'none';
+          addMessage('system', 'connected via OAuth');
+          return;
+        }
+      } catch (_) {}
+
+      if (config) {
+        setup.style.display = 'none';
+        updateStatus(true);
+        addMessage('system', `using ${config.backend}${config.model ? ' (' + config.model + ')' : ''}`);
+      }
+
+      updateFields(false);
+    }
+
+    init();
+  </script>
+</body>
+</html>
+

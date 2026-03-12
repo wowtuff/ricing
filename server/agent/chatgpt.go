@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -25,26 +26,38 @@ const (
 	openaiTokenURL = "https://auth.openai.com/oauth/token"
 	redirectURI    = "http://localhost:1455/auth/callback"
 	scopes         = "openid profile email offline_access api.connectors.read api.connectors.invoke"
-	tokenCachePath = "$HOME/.codex/auth.json"
 	wsEndpoint     = "wss://chatgpt.com/backend-api/codex/responses"
 )
 
+// returns the path where we stash the oauth tokens (~/.codex/auth.json)
+func tokenCacheFile() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".codex", "auth.json"), nil
+}
+
+// mirrors the structure of ~/.codex/auth.json on disk
 type authDotJson struct {
 	Tokens *tokenData `json:"tokens"`
 }
 
+// holds the three tokens returned by the openai oauth endpoint
 type tokenData struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IdToken      string `json:"id_token"`
 }
 
+//raw json body from the token endpoint
 type oauthResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IdToken      string `json:"id_token"`
 }
 
+//the payload sent over the websocket to kick off a new response
 type wsRequest struct {
 	Type               string    `json:"type"`
 	Model              string    `json:"model"`
@@ -59,6 +72,7 @@ type wsRequest struct {
 	Include            []string  `json:"include"`
 }
 
+// one item in the input array — either a user message or a tool result
 type wsInput struct {
 	Type    string      `json:"type"`
 	Role    string      `json:"role,omitempty"`
@@ -67,11 +81,13 @@ type wsInput struct {
 	Output  string      `json:"output,omitempty"`
 }
 
+//typed text block inside a message
 type wsContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
+//any event pushed from the server over the websocket
 type wsEvent struct {
 	Type     string          `json:"type"`
 	Delta    string          `json:"delta,omitempty"`
@@ -79,6 +95,7 @@ type wsEvent struct {
 	Response json.RawMessage `json:"response,omitempty"`
 }
 
+// the parsed shape of a function_call output item.
 type wsFunctionCallItem struct {
 	Type      string `json:"type"`
 	ID        string `json:"id"`
@@ -87,14 +104,17 @@ type wsFunctionCallItem struct {
 	Arguments string `json:"arguments"`
 }
 
+// the response id when a turn finishes
 type wsResponseCompleted struct {
 	ID string `json:"id"`
 }
 
+//talks to the codex websocket api using a cached oauth token
 type chatGPTBackend struct {
 	token string
 }
 
+// loads the cached token and returns a ready-to-use chatGPTBackend
 func chatGPT() (*chatGPTBackend, error) {
 	token, err := getOrRefreshToken(context.Background())
 	if err != nil {
@@ -103,6 +123,7 @@ func chatGPT() (*chatGPTBackend, error) {
 	return &chatGPTBackend{token: token}, nil
 }
 
+// complete dials the codex websocket, sends the conversation, and streamsevents until the response is complete or an error occurs
 func (b *chatGPTBackend) Complete(ctx context.Context, messages []Message, specs []tools.ToolSpec) (*CompletionResult, error) {
 	originator := os.Getenv("CODEX_ORIGINATOR")
 	if originator == "" {
@@ -194,6 +215,7 @@ func (b *chatGPTBackend) Complete(ctx context.Context, messages []Message, specs
 	}
 }
 
+//converts internal messages to the websocket input format.
 func messagesToWSInput(messages []Message) []wsInput {
 	var input []wsInput
 	for _, m := range messages {
@@ -217,6 +239,7 @@ func messagesToWSInput(messages []Message) []wsInput {
 	return input
 }
 
+//converts our generic tool specs into the shape the ws api expects.
 func buildWSToolSpecs(specs []tools.ToolSpec) []any {
 	out := make([]any, 0, len(specs))
 	for _, spec := range specs {
@@ -230,6 +253,7 @@ func buildWSToolSpecs(specs []tools.ToolSpec) []any {
 	return out
 }
 
+// getorrefreshtoken returns a valid access token from cache if possible, otherwise kicks off the browser login flow
 func getOrRefreshToken(ctx context.Context) (string, error) {
 	if token, err := loadCachedToken(); err == nil {
 		return token, nil
@@ -237,6 +261,7 @@ func getOrRefreshToken(ctx context.Context) (string, error) {
 	return loginFlow(ctx)
 }
 
+// loginflow starts a local http server, opens the browser to openai's oauth page, waits for the redirect with the code, then exchanges it for tokens
 func loginFlow(ctx context.Context) (string, error) {
 	verifier := generateVerifier()
 	challenge := generateChallenge(verifier)
@@ -289,6 +314,7 @@ func loginFlow(ctx context.Context) (string, error) {
 	return exchangeCode(ctx, code, verifier)
 }
 
+//trades the authorization code + pkce verifier for an access token, then writes it to the cache file so future runs don't need the browser
 func exchangeCode(ctx context.Context, code, verifier string) (string, error) {
 	resp, err := http.PostForm(openaiTokenURL, url.Values{
 		"grant_type":    {"authorization_code"},
@@ -314,9 +340,13 @@ func exchangeCode(ctx context.Context, code, verifier string) (string, error) {
 	return oauthResp.AccessToken, nil
 }
 
+// writes tokens to ~/.codex/auth.json, creating the directory if needed
 func cacheToken(oauthResp oauthResponse) error {
-	path := os.ExpandEnv(tokenCachePath)
-	if err := os.MkdirAll(strings.TrimSuffix(path, "/auth.json"), 0700); err != nil {
+	path, err := tokenCacheFile()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 	auth := authDotJson{
@@ -333,8 +363,12 @@ func cacheToken(oauthResp oauthResponse) error {
 	return os.WriteFile(path, data, 0600)
 }
 
+// reads the access token from disk, returning an error if it's missing or empty (which means the user needs to log in again).
 func loadCachedToken() (string, error) {
-	path := os.ExpandEnv(tokenCachePath)
+	path, err := tokenCacheFile()
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -349,17 +383,20 @@ func loadCachedToken() (string, error) {
 	return auth.Tokens.AccessToken, nil
 }
 
+// makes a random pkce code verifier
 func generateVerifier() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+//hashes the verifier to produce the pkce code challenge
 func generateChallenge(verifier string) string {
 	h := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
+//pulls the chatgpt_account_id out of the jwt payload, returning empty string if the token is malformed or the claim is absent
 func extractAccountID(token string) string {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
@@ -380,6 +417,7 @@ func extractAccountID(token string) string {
 	return claims.Auth.ChatGPTAccountID
 }
 
+// launches the given url in the system's default browser
 func openBrowser(u string) {
 	switch runtime.GOOS {
 	case "windows":

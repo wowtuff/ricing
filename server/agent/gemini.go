@@ -10,11 +10,13 @@ import (
 	"github.com/wowtuff/ricing/tools"
 )
 
+// geminibackend sends completions to the google generative language api.
 type GeminiBackend struct {
 	model  string
 	apiKey string
 }
 
+// gemini returns a GeminiBackend, defaulting to gemini-2.0-flash if no model is given.
 func gemini(model, apiKey string) (*GeminiBackend, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api_key is required for gemini backend")
@@ -25,6 +27,8 @@ func gemini(model, apiKey string) (*GeminiBackend, error) {
 	return &GeminiBackend{model: model, apiKey: apiKey}, nil
 }
 
+// complete translates messages into gemini's contents format, calls generateContent,
+// and extracts text and functionCall parts into a CompletionResult.
 func (b *GeminiBackend) Complete(ctx context.Context, messages []Message, specs []tools.ToolSpec) (*CompletionResult, error) {
 	var contents []map[string]any
 	var systemInstruction string
@@ -167,6 +171,7 @@ func (b *GeminiBackend) Complete(ctx context.Context, messages []Message, specs 
 	}, nil
 }
 
+// togeminitools wraps tool specs in the functionDeclarations shape gemini expects.
 func toGeminiTools(specs []tools.ToolSpec) []map[string]any {
 	out := make([]map[string]any, 0, len(specs))
 	for _, spec := range specs {

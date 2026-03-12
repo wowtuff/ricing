@@ -11,10 +11,15 @@ import (
 	"github.com/wowtuff/ricing/utils"
 )
 
+// runoptions carries per-run overrides — backend selection, model, and credentials.
 type RunOptions struct {
-	Model string
+	Model   string
+	Backend string
+	APIKey  string
+	URL     string
 }
 
+// streamtoolcall is a tool invocation surfaced to the caller mid-stream.
 type StreamToolCall struct {
 	ID        string
 	CallID    string
@@ -22,20 +27,35 @@ type StreamToolCall struct {
 	Arguments map[string]any
 }
 
+// toolresult is the output of a tool call, passed back into the conversation.
 type ToolResult struct {
 	ToolCallID string
 	CallID     string
 	Output     any
 }
 
+// streamsink is the set of callbacks the caller can hook into during a run
+
+// all fields are optional nil callbacks are silently skipped
 type StreamSink struct {
 	OnDelta      func(text string)
 	OnToolCall   func(call StreamToolCall)
 	OnToolResult func(res ToolResult)
 }
 
+// runstream is the streaming entry point routes to the chatgpt websocket path or the generic rest path depending on the backend in opts
 func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPrompt string, sink StreamSink) error {
-	// only use cached token; connect via provider API first
+	backend := opts.Backend
+	if backend == "" {
+		backend = "chatgpt"
+	}
+
+	// use rest backend for non-chatgpt
+	if backend != "chatgpt" {
+		return runStreamREST(ctx, reg, opts, userPrompt, sink)
+	}
+
+	// chatgpt oauth flow
 	token, err := loadCachedToken()
 	if err != nil {
 		return utils.LogError("provider not connected: %s", err)
@@ -69,7 +89,11 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 	}
 	defer conn.Close()
 
-	toolSpecs := buildWSToolSpecs(reg.List())
+	var regList []tools.ToolSpec
+	if reg != nil {
+		regList = reg.List()
+	}
+	toolSpecs := buildWSToolSpecs(regList)
 	var previousResponseID *string
 	input := []wsInput{{
 		Type:    "message",
@@ -154,5 +178,84 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 			input = append(input, wsInput{Type: "function_call_output", CallID: tc.CallID, Output: resultJSON})
 		}
 		previousResponseID = &responseID
+	}
+}
+
+// runstreamrest handles the agentic loop for all non-chatgpt backends, it calls Complete in a loop, forwarding deltas and tool calls to the sink
+func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, userPrompt string, sink StreamSink) error {
+	cfg := Config{
+		Backend: opts.Backend,
+		Model:   opts.Model,
+		APIKey:  opts.APIKey,
+		URL:     opts.URL,
+	}
+
+	var backend Backend
+	var err error
+
+	switch cfg.Backend {
+	case "openai":
+		backend, err = restBackendFn("https://api.openai.com/v1", cfg.Model, cfg.APIKey)
+	case "anthropic":
+		backend, err = anthropic(cfg.Model, cfg.APIKey)
+	case "gemini":
+		backend, err = gemini(cfg.Model, cfg.APIKey)
+	case "openrouter":
+		backend, err = restBackendFn("https://openrouter.ai/api/v1", cfg.Model, cfg.APIKey)
+	case "ollama", "lmstudio", "local":
+		backend, err = restBackendFn(cfg.URL, cfg.Model, "")
+	default:
+		backend, err = restBackendFn(cfg.URL, cfg.Model, cfg.APIKey)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	var specs []tools.ToolSpec
+	if reg != nil {
+		specs = reg.List()
+	}
+	messages := []Message{{Role: "user", Content: userPrompt}}
+
+	for {
+		result, err := backend.Complete(ctx, messages, specs)
+		if err != nil {
+			return err
+		}
+
+		if result.Content != "" {
+			sink.OnDelta(result.Content)
+		}
+
+		if len(result.ToolCalls) == 0 {
+			return nil
+		}
+
+		for _, tc := range result.ToolCalls {
+			if sink.OnToolCall != nil {
+				var args map[string]any
+				json.Unmarshal([]byte(tc.Arguments), &args)
+				sink.OnToolCall(StreamToolCall{ID: tc.ID, CallID: tc.ID, Name: tc.Name, Arguments: args})
+			}
+
+			output := executeToolByName(ctx, reg, tc)
+			var out any
+			json.Unmarshal([]byte(output), &out)
+
+			if sink.OnToolResult != nil {
+				sink.OnToolResult(ToolResult{ToolCallID: tc.ID, CallID: tc.ID, Output: out})
+			}
+
+			messages = append(messages, Message{
+				Role:      "assistant",
+				ToolCalls: []ToolCall{tc},
+			})
+			messages = append(messages, Message{
+				Role:       "tool",
+				Content:    output,
+				ToolCallID: tc.ID,
+			})
+		}
 	}
 }

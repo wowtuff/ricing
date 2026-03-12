@@ -13,6 +13,8 @@ type createRunRequest struct {
 	LLM    struct {
 		ProviderID string `json:"provider_id"`
 		Model      string `json:"model"`
+		APIKey     string `json:"api_key"`
+		URL        string `json:"url"`
 	} `json:"llm"`
 }
 
@@ -50,10 +52,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Mode:       mode,
 		ProviderID: providerID,
 		Model:      model,
+		APIKey:     req.LLM.APIKey,
+		URL:        req.LLM.URL,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrProviderNotConnected) {
-			writeError(w, http.StatusConflict, "provider_not_connected", err.Error())
+			writeError(w, http.StatusConflict, "provider_not_connected", "provider not linked. click connect to authenticate.")
 			return
 		}
 		writeError(w, http.StatusBadRequest, "run_create_failed", err.Error())

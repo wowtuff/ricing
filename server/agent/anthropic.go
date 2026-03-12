@@ -10,11 +10,13 @@ import (
 	"github.com/wowtuff/ricing/tools"
 )
 
+// anthropicbackend sends completions to the anthropic messages api
 type AnthropicBackend struct {
 	model  string
 	apiKey string
 }
 
+// returns an AnthropicBackend, defaulting to claude-sonnet-4-5 if no model is given
 func anthropic(model, apiKey string) (*AnthropicBackend, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api_key is required for anthropic backend")
@@ -25,6 +27,7 @@ func anthropic(model, apiKey string) (*AnthropicBackend, error) {
 	return &AnthropicBackend{model: model, apiKey: apiKey}, nil
 }
 
+// complete converts messages to anthropic's format, posts to /v1/messages, and returns the text and any tool_use blocks as a CompletionResult
 func (b *AnthropicBackend) Complete(ctx context.Context, messages []Message, specs []tools.ToolSpec) (*CompletionResult, error) {
 	var anthropicMessages []map[string]any
 	var systemPrompt string
@@ -154,6 +157,7 @@ func (b *AnthropicBackend) Complete(ctx context.Context, messages []Message, spe
 	}, nil
 }
 
+// reshapes tool specs into the input_schema format anthropic expects
 func toAnthropicTools(specs []tools.ToolSpec) []map[string]any {
 	out := make([]map[string]any, 0, len(specs))
 	for _, spec := range specs {

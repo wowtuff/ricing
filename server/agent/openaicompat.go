@@ -10,12 +10,14 @@ import (
 	"github.com/wowtuff/ricing/tools"
 )
 
+// calls any openai-compatible chat completions endpoint
 type restBackend struct {
 	baseURL string
 	model   string
 	apiKey  string
 }
 
+// constructs a restBackend, refusing to proceed without an api key
 func restBackendFn(baseURL, model, apiKey string) (*restBackend, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api_key is required for this backend")
@@ -23,6 +25,7 @@ func restBackendFn(baseURL, model, apiKey string) (*restBackend, error) {
 	return &restBackend{baseURL: baseURL, model: model, apiKey: apiKey}, nil
 }
 
+// complete posts to /chat/completions and returns the first choice as a CompletionResult
 func (b *restBackend) Complete(ctx context.Context, messages []Message, specs []tools.ToolSpec) (*CompletionResult, error) {
 	body := map[string]any{
 		"model":    b.model,
@@ -93,6 +96,7 @@ func (b *restBackend) Complete(ctx context.Context, messages []Message, specs []
 	}, nil
 }
 
+// converts our internal message slice to the openai wire format
 func toOpenAIMessages(messages []Message) []map[string]any {
 	var out []map[string]any
 	for _, m := range messages {
@@ -130,6 +134,7 @@ func toOpenAIMessages(messages []Message) []map[string]any {
 	return out
 }
 
+// wraps tool specs in the openai function-calling envelope
 func toOpenAITools(specs []tools.ToolSpec) []map[string]any {
 	out := make([]map[string]any, 0, len(specs))
 	for _, spec := range specs {

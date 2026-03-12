@@ -10,6 +10,7 @@ import (
 	"github.com/wowtuff/ricing/utils"
 )
 
+// config holds backend selection and credentials for a run
 type Config struct {
 	Backend string `json:"backend"`
 	Model   string `json:"model"`
@@ -17,16 +18,20 @@ type Config struct {
 	URL     string `json:"url"`
 }
 
+// runoption is a functional option that modifies a Config before a run
 type RunOption func(*Config)
 
+// withconfig returns a RunOption that applies all fields from cfg at once
 func WithConfig(cfg Config) RunOption {
 	return func(c *Config) {
 		c.Backend = cfg.Backend
 		c.Model = cfg.Model
 		c.APIKey = cfg.APIKey
+		c.URL = cfg.URL
 	}
 }
 
+// loadconfig reads ~/.ricing/config.json and returns its contents, if the file is missing it returns a sensible default (chatgpt backend)
 func loadConfig() (*Config, error) {
 	path := os.ExpandEnv("$HOME/.ricing/config.json")
 	data, err := os.ReadFile(path)
@@ -40,6 +45,7 @@ func loadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
+// run is the main agentic loop — it picks the right backend, sends the prompt, and keeps going until the model stops asking for tool calls
 func Run(ctx context.Context, reg *tools.Registry, userPrompt string, opts ...RunOption) (string, error) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -106,6 +112,21 @@ func Run(ctx context.Context, reg *tools.Registry, userPrompt string, opts ...Ru
 	}
 }
 
+const PingPrompt = "hi! what is your name?"
+
+// Ping sends a test prompt to verify the connection works
+// Returns the AI's response or an error
+func Ping(ctx context.Context, opts RunOptions) (string, error) {
+	var out string
+	err := RunStream(ctx, nil, opts, PingPrompt, StreamSink{
+		OnDelta: func(text string) {
+			out += text
+		},
+	})
+	return out, err
+}
+
+// executetoolbyname looks up a tool in the registry by name and runs it, returning the JSON-encoded result (or an error object if anything goes wrong)
 func executeToolByName(ctx context.Context, reg *tools.Registry, tc ToolCall) string {
 	tool, err := reg.Get(tc.Name)
 	if err != nil {

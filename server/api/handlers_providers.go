@@ -50,6 +50,12 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type pingProviderRequest struct {
+	Model  string `json:"model"`
+	APIKey string `json:"api_key"`
+	URL    string `json:"url"`
+}
+
 func (s *Server) handleProviderActions(w http.ResponseWriter, r *http.Request) {
 	parts, ok := pathParts(r.URL.Path, "/api/v1/providers/")
 	if !ok || len(parts) == 0 {
@@ -83,6 +89,24 @@ func (s *Server) handleProviderActions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"provider": p, "auth_url": authURL})
+		return
+
+	case "ping":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		var req pingProviderRequest
+		_ = readJSON(r, &req)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		reply, err := s.providers.Ping(ctx, providerID, req.Model, req.APIKey, req.URL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "ping_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"reply": reply})
 		return
 
 	case "disconnect":

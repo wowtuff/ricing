@@ -12,7 +12,6 @@ type Message struct {
 	ToolCallID string
 	ToolCalls  []ToolCall
 }
-
 type ToolCall struct {
 	ID        string
 	Name      string

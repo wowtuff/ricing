@@ -2,3 +2,17 @@ bruh
 bruh.pub
 .gitignore
 .env
+
+# old unused ui
+server/cmd/server/
+
+# compiled binaries
+*.exe
+*.exe~
+
+# runtime logs
+app.log
+
+# windows null device artefact
+nul
+server/nul

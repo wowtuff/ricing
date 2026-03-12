@@ -12,3 +12,33 @@ openai error: Post "https://openrouter.ai/api/v1/chat/completions": proxyconnect
 openai error: Post "https://openrouter.ai/api/v1/chat/completions": tls: failed to verify certificate: x509: certificate signed by unknown authority
 openai error: Post "https://api.openai.com/v1/chat/completions": tls: failed to verify certificate: x509: certificate signed by unknown authority
 openai error: Post "https://api.openai.com/v1/chat/completions": tls: failed to verify certificate: x509: certificate signed by unknown authority
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+provider not connected: open /.codex/auth.json: The system cannot find the path specified.
+provider not connected: open /.codex/auth.json: The system cannot find the path specified.
+provider not connected: open /.codex/auth.json: The system cannot find the path specified.
+provider not connected: open /.codex/auth.json: The system cannot find the path specified.
+provider not connected: open /.codex/auth.json: The system cannot find the path specified.
+provider not connected: open /.codex/auth.json: The system cannot find the path specified.
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
+websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled

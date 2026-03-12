@@ -18,6 +18,9 @@ type Run struct {
 	Prompt     string `json:"prompt,omitempty"`
 	ProviderID string `json:"provider_id"`
 	Model      string `json:"model"`
+	Backend    string `json:"backend"`
+	APIKey     string `json:"-"`
+	URL        string `json:"url"`
 	Result     *struct {
 		OutputText string `json:"output_text"`
 	} `json:"result,omitempty"`
@@ -32,6 +35,8 @@ type CreateRun struct {
 	Mode       string
 	ProviderID string
 	Model      string
+	APIKey     string
+	URL        string
 }
 
 type runState struct {
@@ -58,12 +63,17 @@ func NewRunService(reg *tools.Registry, providers *ProviderService) *RunService 
 }
 
 func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
-	if req.ProviderID == "" {
-		req.ProviderID = s.providers.DefaultID()
+	hasCreds := req.APIKey != "" || req.URL != ""
+
+	if !hasCreds {
+		if req.ProviderID == "" {
+			req.ProviderID = s.providers.DefaultID()
+		}
+		if !s.providers.IsConnected(req.ProviderID) {
+			return Run{}, ErrProviderNotConnected
+		}
 	}
-	if !s.providers.IsConnected(req.ProviderID) {
-		return Run{}, ErrProviderNotConnected
-	}
+
 	if req.Mode == "" {
 		req.Mode = "auto"
 	}
@@ -73,6 +83,13 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 
 	runID := newID("run")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	backend := s.providers.BackendForProvider(req.ProviderID)
+	if backend == "" {
+		backend = req.ProviderID 
+
+	}
+
 	r := Run{
 		ID:         runID,
 		CreatedAt:  now,
@@ -81,11 +98,15 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 		Prompt:     req.Prompt,
 		ProviderID: req.ProviderID,
 		Model:      req.Model,
+		Backend:    backend,
+		APIKey:     req.APIKey,
+		URL:        req.URL,
 		LatestSeq:  0,
 	}
 
 	hub := NewRunHub(runID, 2048)
-	ctx2, cancel := context.WithCancel(ctx)
+
+	ctx2, cancel := context.WithCancel(context.Background())
 	st := &runState{run: r, hub: hub, ctx: ctx2, cancel: cancel}
 
 	s.mu.Lock()
@@ -135,7 +156,12 @@ func (s *RunService) execute(st *runState) {
 	st.publish("run.status", map[string]any{"status": "running", "stage": st.run.Mode})
 
 	var output string
-	err := agent.RunStream(st.ctx, s.reg, agent.RunOptions{Model: st.run.Model}, st.run.Prompt, agent.StreamSink{
+	err := agent.RunStream(st.ctx, s.reg, agent.RunOptions{
+		Model:   st.run.Model,
+		Backend: st.run.Backend,
+		APIKey:  st.run.APIKey,
+		URL:     st.run.URL,
+	}, st.run.Prompt, agent.StreamSink{
 		OnDelta: func(text string) {
 			st.appendDelta(text)
 			st.publish("assistant.delta", map[string]any{"text": text})
@@ -237,3 +263,4 @@ func (st *runState) getOutput() string {
 	}
 	return st.run.Result.OutputText
 }
+
