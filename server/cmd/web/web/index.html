@@ -46,7 +46,10 @@
       background: rgba(8, 8, 10, 0.8);
       backdrop-filter: blur(12px);
     }
-
+    .header-left{
+      display: flex;
+      gap: 20px;
+    }
     header h1 {
       font-family: 'JetBrains Mono', monospace;
       font-size: 18px;
@@ -320,7 +323,7 @@
     .oauth-btn {
       width: 100%;
       padding: 14px 16px;
-      background: linear-gradient(135deg, #10a37f 0%, #1a7f64 100%);
+      background: linear-gradient(135deg, #17725a 0%, #17725a 100%);
       color: white;
       border: none;
       border-radius: 8px;
@@ -333,6 +336,8 @@
 
     .oauth-btn:hover {
       transform: translateY(-2px);
+     
+      background: linear-gradient(135deg, #10a37f 0%, #1a7f64 100%);
       box-shadow: 0 8px 24px rgba(16, 163, 127, 0.3);
     }
 
@@ -349,7 +354,7 @@
       padding: 16px;
       font-size: 14px;
     }
-
+    
     .setup-box button.secondary {
       width: 100%;
       margin-top: 12px;
@@ -367,23 +372,176 @@
       box-shadow: none;
       transform: none;
     }
+    .sidebar{
+    position: relative;
+    width:260px;
+    background:#08080a;
+    color:white;
+    padding:20px;
+    border-right:1px solid var(--border-subtle);
+}
+.gradient-line{
+    height:1px;
+    background: linear-gradient(90deg, transparent, var(--accent-primary), transparent)
+}
+.sideButts{
+  background-color: black;
+  height: auto;
+  width:auto;
+  display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:15px;
+  color: var(--accent-primary);
+  margin: 5px;
+  font-size: small;
+}
+.sideButts:hover{
+  border: 0.75px solid var(--accent-primary);
+  background-color: #08080a;
+    transform: translateY(-2px);
+}
+#pc{
+  padding-left: 85px;
+  font-size: 15px;
+  color: var(--accent-secondary);
+  margin: 5px;
+}
+.previousChats{
+  background-color: black;
+  height: auto;
+  width:auto;
+  display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:15px;
+  color: var(--accent-primary);
+  margin: 5px;
+  font-size: small;
+}
+.previousChats:hover{
+  transform: translateY(0px);
+  box-shadow: none;
+  background-color: #08080a;
+}
+.settings-btn{
+    position:absolute;
+    bottom:20px;
+    right:20px;
+
+    width:40px;
+    height:40px;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+
+    border:none;
+    border-radius:10px;
+    background-color: black;
+    color: var(--accent-primary);
+    font-size:18px;
+    cursor:pointer;
+}
+.settings-btn:hover{
+  transform: translateY(0px);
+  box-shadow: none;
+  background-color: #08080a;
+}
+.attch-btn{
+  display:flex;
+    align-items:center;
+    justify-content:center;
+
+    border:none;
+    border-radius:10px;
+    background-color: black;
+    color: var(--accent-primary);
+    font-size:18px;
+  border:0.25px solid var(--accent-primary);
+    cursor:pointer;}
+    .attch-btn:hover{
+      transform: translateY(0px);
+      margin: 0;
+  box-shadow: none;
+  background-color: #08080a;
+    }
+.attach-menu{
+  position:absolute;
+  bottom:70px;
+  left:10px;
+  background:black;
+  color:var(--accent-primary);
+  border-radius:8px;
+  padding:10px;
+  display:none;
+  z-index:1000;
+}
+.attch-M-btn{
+  display: flex;
+align-items:center;
+    justify-content:center;
+    font-size: 12px;
+    border:none;
+    border-radius:10px;
+    background-color: black;
+    color: var(--accent-primary);
+    cursor:pointer;}
+    .attch-M-btn:hover{
+      transform: translateY(0px);
+  box-shadow: none;
+  background-color: #08080a;
+}
+
+.layout{
+  flex:1;
+  display:flex;
+}
+
+.main{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+}
+
+
   </style>
 </head>
 <body>
   <header>
     <h1><span>r</span>icing<span class="cursor">_</span></h1>
+
     <div class="status-badge" id="statusBadge" onclick="showSetup()">
       <span id="statusText">not linked</span>
+
     </div>
   </header>
+  <div class="layout">
 
-  <div id="chat"></div>
-
-  <div id="input-area">
-    <input id="prompt" placeholder="what do you want to build?" />
-    <button id="send">send</button>
+  <div class="sidebar" id="sidebar">
+    <button class="sideButts">New chat</button>
+    <button class="sideButts">Search</button>
+    <div class="gradient-line"></div>
+    <p id="pc">History</p>
+    <button class="previousChats">previousChats</button>
+    
+    <button class="settings-btn">⚙</button>
   </div>
 
+  <div class="main">
+      <div id="chat"></div>
+      <div id="input-area">
+        <button class="attch-btn" onclick="toggleAttachMenu()">+</button>
+        <div class="attach-menu" id="attachMenu">
+      <button class="attch-M-btn">Image</button>
+      <button class="attch-M-btn">File</button>
+  </div>
+        <input id="prompt" placeholder="what do you want to build?" />
+        <button id="send">send</button>
+      </div>
+  </div>
+
+</div>
   <div id="setup">
     <div class="setup-box">
       <h2>model setup</h2>
@@ -425,7 +583,7 @@
       <button class="secondary" onclick="closeSetup()">cancel</button>
     </div>
   </div>
-
+  
   <script>
     const chat = document.getElementById('chat');
     const prompt = document.getElementById('prompt');
@@ -445,6 +603,10 @@
       ollama:     { url: 'http://localhost:11434/v1', model: '' },
       lmstudio:   { url: 'http://localhost:1234/v1',  model: '' }
     };
+function toggleAttachMenu(){
+    const menu = document.getElementById("attachMenu");
+    menu.style.display = menu.style.display === "block" ? "none" : "block";
+}
 
     function updateFields(clear = true) {
       const provider = document.getElementById('provider').value;
