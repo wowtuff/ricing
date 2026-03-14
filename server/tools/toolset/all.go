@@ -9,6 +9,7 @@ func NewDefaultRegistry() *tools.Registry {
 
 	reg.Register(MultiplyTool{})
 	reg.Register(NotifyTool{})
+	reg.Register(&CmdTool{})
 
 	return reg
 }
