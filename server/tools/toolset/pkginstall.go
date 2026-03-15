@@ -16,6 +16,10 @@ var (
 	ErrAuthFailed    = errors.New("authentication failed")
 )
 
+func isRoot() bool {
+	return os.Geteuid() == 0
+}
+
 type InstallPackageTool struct{}
 
 func (t InstallPackageTool) Specs() tools.ToolSpec {
@@ -229,12 +233,12 @@ func installWithManager(ctx context.Context, mgr, pkg string) error {
 		return runWithPrivilegePrompt(ctx, "zypper --non-interactive install "+pkg, "zypper", "--non-interactive", "install", pkg)
 	case "pacman":
 		return runWithPrivilegePrompt(ctx, "pacman -S --noconfirm "+pkg, "pacman", "-S", "--noconfirm", pkg)
+	case "apk":
+		return runWithPrivilegePrompt(ctx, "apk add "+pkg, "apk", "add", pkg)
 	case "yay":
 		cmd = exec.CommandContext(ctx, "yay", "-S", "--noconfirm", pkg)
 	case "paru":
 		cmd = exec.CommandContext(ctx, "paru", "-S", "--noconfirm", pkg)
-	case "apk":
-		return runWithPrivilegePrompt(ctx, "apk add "+pkg, "apk", "add", pkg)
 	default:
 		return fmt.Errorf("unsupported manager: %s", mgr)
 	}
@@ -251,7 +255,16 @@ func runWithPrivilegePrompt(ctx context.Context, operation, name string, args ..
 		return errors.New("sudo is required but was not found")
 	}
 
-	password, err := promptSudoPassword(operation)
+	if isRoot() {
+		cmd := exec.CommandContext(ctx, name, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("command failed: %v: %s", err, string(out))
+		}
+		return nil
+	}
+
+	password, err := promptSudoPassword(ctx, operation)
 	if err != nil {
 		return err
 	}
@@ -261,8 +274,8 @@ func runWithPrivilegePrompt(ctx context.Context, operation, name string, args ..
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		lower := strings.ToLower(string(out))
-		if strings.Contains(lower, "incorrect password") || strings.Contains(lower, "sorry, try again") {
+		s := strings.ToLower(string(out))
+		if strings.Contains(s, "incorrect password") || strings.Contains(s, "sorry, try again") {
 			return fmt.Errorf("%w: %s", ErrAuthFailed, strings.TrimSpace(string(out)))
 		}
 		return fmt.Errorf("install failed with sudo: %v: %s", err, string(out))
@@ -271,69 +284,33 @@ func runWithPrivilegePrompt(ctx context.Context, operation, name string, args ..
 	return nil
 }
 
-func promptSudoPassword(operation string) (string, error) {
-	gtk.Init(nil)
+func promptSudoPassword(ctx context.Context, operation string) (string, error) {
+	if !commandExists("zenity") {
+		return "", errors.New("zenity is required for graphical sudo prompt but was not found")
+	}
 
-	dialog, err := gtk.DialogNew()
+	text := fmt.Sprintf(
+		"Authentication is required to perform:\n\n%s\n\nEnter your sudo password:",
+		operation,
+	)
+
+	cmd := exec.CommandContext(
+		ctx,
+		"zenity",
+		"--password",
+		"--title=Authentication Required",
+		"--text="+text,
+	)
+
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
-	}
-	defer dialog.Destroy()
-
-	dialog.SetTitle("Authentication Required")
-	dialog.SetModal(true)
-	dialog.SetDefaultSize(420, 140)
-
-	dialog.AddButton("Cancel", gtk.RESPONSE_CANCEL)
-	dialog.AddButton("OK", gtk.RESPONSE_OK)
-	dialog.SetDefaultResponse(gtk.RESPONSE_OK)
-
-	content, err := dialog.GetContentArea()
-	if err != nil {
-		return "", err
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return "", ErrAuthCancelled
+		}
+		return "", fmt.Errorf("failed to open password dialog: %w", err)
 	}
 
-	box, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8)
-	if err != nil {
-		return "", err
-	}
-	box.SetMarginTop(12)
-	box.SetMarginBottom(12)
-	box.SetMarginStart(12)
-	box.SetMarginEnd(12)
-
-	label, err := gtk.LabelNew("")
-	if err != nil {
-		return "", err
-	}
-	label.SetHAlign(gtk.ALIGN_START)
-	label.SetLineWrap(true)
-	label.SetText(fmt.Sprintf("Administrator privileges are required to perform:\n\n%s", operation))
-
-	entry, err := gtk.EntryNew()
-	if err != nil {
-		return "", err
-	}
-	entry.SetVisibility(false)
-	entry.SetInvisibleChar('•')
-	entry.SetActivatesDefault(true)
-	entry.SetPlaceholderText("Enter sudo password")
-
-	box.PackStart(label, false, false, 0)
-	box.PackStart(entry, false, false, 0)
-	content.Add(box)
-
-	dialog.ShowAll()
-
-	response := dialog.Run()
-	if response != int(gtk.RESPONSE_OK) {
-		return "", ErrAuthCancelled
-	}
-
-	password, err := entry.GetText()
-	if err != nil {
-		return "", err
-	}
+	password := strings.TrimRight(string(out), "\r\n")
 	if strings.TrimSpace(password) == "" {
 		return "", ErrAuthCancelled
 	}
