@@ -1,68 +1,150 @@
 #!/bin/bash
+set -euo pipefail
 
-echo "preview container"
+echo "================================================"
+echo " Hyprland Preview Container"
+echo "================================================"
+
+uid=1000
+user=hypruser
+runtime_dir=/run/user/$uid
+rice_dir=/home/$user/.rice
+mkdir -p "$rice_dir"
+
+exec > >(tee -a "$rice_dir/boot.log") 2>&1
 
 dbus-uuidgen > /etc/machine-id 2>/dev/null || true
-mkdir -p /run/user/1000
-chown hypruser:hypruser /run/user/1000
 
-#seatd
-echo "seatd start"
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || true
+
+mkdir -p "$runtime_dir"
+chown "$user:$user" "$runtime_dir"
+chmod 700 "$runtime_dir"
+
+mkdir -p /home/$user/.cache/hyprland
+chown -R "$user:$user" /home/$user/.cache "$rice_dir"
+
+rm -rf "$runtime_dir/hypr"
+rm -f "$runtime_dir"/wayland-*
+
+echo "[1/4] Starting seatd..."
 SEATD_VTBOUND=0 seatd &
 SEATD_PID=$!
 sleep 1
-chmod 777 /run/seatd.sock
-echo "seatd (pid $SEATD_PID) running"
+chmod 666 /run/seatd.sock || true
+echo "      seatd running (pid $SEATD_PID)"
 
-#hyprland headless
-echo "hyprland headless start"
-su - hypruser -c "
-    export XDG_RUNTIME_DIR=/run/user/1000
+echo "[2/4] Starting Hyprland..."
+su - "$user" -c "
+    export XDG_RUNTIME_DIR=$runtime_dir
     export XDG_SESSION_TYPE=wayland
-    export WLR_BACKENDS=headless
+    export XDG_CURRENT_DESKTOP=Hyprland
+    export AQ_BACKENDS=headless
     export WLR_RENDERER=pixman
-    Hyprland
+    export EGL_PLATFORM=surfaceless
+    export LIBSEAT_BACKEND=seatd
+    export HYPRLAND_NO_SD_NOTIFY=1
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus
+
+    dbus-daemon --session --address=unix:path=$runtime_dir/bus --fork
+    exec Hyprland
 " &
 HYPRLAND_PID=$!
-echo "hyprland socket wait"
+
+echo "      Waiting for Hyprland instance..."
+SOCKET=""
 for i in $(seq 1 30); do
-    SOCKET=$(ls /run/user/1000/hypr/ 2>/dev/null | head -1)
+    SOCKET=$(ls "$runtime_dir/hypr" 2>/dev/null | head -1 || true)
     if [ -n "$SOCKET" ]; then
-        echo "hyprland socket ready: $SOCKET"
+        echo "      Hyprland instance: $SOCKET"
         break
     fi
     sleep 1
 done
 
 if [ -z "$SOCKET" ]; then
-    echo "ERROR!!!!!!!!!!!! hyprland fail"
+    echo "ERROR: Hyprland failed to start"
+    sleep 3600
     exit 1
 fi
-export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
 
-# virtual headless output for novnc
-echo "virtual headless output"
-su - hypruser -c "
-    export XDG_RUNTIME_DIR=/run/user/1000
-    export WAYLAND_DISPLAY=wayland-1
+export HYPRLAND_INSTANCE_SIGNATURE="$SOCKET"
+
+WAYLAND_DISPLAY_SOCKET=""
+for s in "$runtime_dir"/wayland-*; do
+    if [ -S "$s" ]; then
+        WAYLAND_DISPLAY_SOCKET="$(basename "$s")"
+        break
+    fi
+done
+
+if [ -z "$WAYLAND_DISPLAY_SOCKET" ]; then
+    echo "ERROR: No Wayland socket found"
+    sleep 3600
+    exit 1
+fi
+
+echo "      Wayland display: $WAYLAND_DISPLAY_SOCKET"
+
+echo "[3/4] Creating virtual display..."
+su - "$user" -c "
+    export XDG_RUNTIME_DIR=$runtime_dir
     export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
     hyprctl output create headless
-" && echo "Virtual output created" || echo "Warning!!! could not create output (may already exist)"
-sleep 1
+" || true
 
-# Start wayvnc
+sleep 2
+
+echo "      Detecting actual headless output..."
+HEADLESS_OUTPUT="$(
+    su - "$user" -c "
+        export XDG_RUNTIME_DIR=$runtime_dir
+        export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
+        hyprctl monitors all
+    " | sed -n 's/^Monitor \(HEADLESS-[^ ]*\).*/\1/p' | tail -n1
+)"
+
+if [ -z "${HEADLESS_OUTPUT:-}" ]; then
+    echo "ERROR: No HEADLESS output detected"
+    su - "$user" -c "
+        export XDG_RUNTIME_DIR=$runtime_dir
+        export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
+        hyprctl monitors all || true
+    "
+    sleep 3600
+    exit 1
+fi
+
+echo "      Using output: $HEADLESS_OUTPUT"
+
 echo "[4/4] Starting wayvnc on :5070..."
-su - hypruser -c "
-    export XDG_RUNTIME_DIR=/run/user/1000
-    export WAYLAND_DISPLAY=wayland-1
-    wayvnc 0.0.0.0 5070
+su - "$user" -c "
+    export XDG_RUNTIME_DIR=$runtime_dir
+    export WAYLAND_DISPLAY=$WAYLAND_DISPLAY_SOCKET
+    exec wayvnc -o $HEADLESS_OUTPUT 0.0.0.0 5070
 " &
 WAYVNC_PID=$!
-sleep 1
 
-# Start websockify and novnc
-echo "Starting noVNC on :6090..."
+sleep 2
+
+if ! kill -0 "$WAYVNC_PID" 2>/dev/null; then
+    echo "ERROR: wayvnc failed to start"
+    sleep 3600
+    exit 1
+fi
+
+echo "      Starting noVNC on :6090..."
 websockify --web=/opt/novnc 6090 localhost:5070 &
-echo " VNC client : localhost:5070"
-echo " Browser    : http://localhost:6090"
-wait $HYPRLAND_PID
+
+echo ""
+echo "================================================"
+echo " Ready!"
+echo " Output : $HEADLESS_OUTPUT"
+echo " VNC    : localhost:5070"
+echo " Browser: http://localhost:6090"
+echo "================================================"
+
+wait $HYPRLAND_PID || true
+echo "Hyprland crashed, keeping container alive for inspection..."
+sleep 3600
