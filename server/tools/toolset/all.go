@@ -10,6 +10,7 @@ func NewDefaultRegistry() *tools.Registry {
 	reg.Register(MultiplyTool{})
 	reg.Register(NotifyTool{})
 	reg.Register(&CmdTool{})
+	reg.Register(&InstallPackageTool{})
 
 	return reg
 }

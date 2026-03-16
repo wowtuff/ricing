@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
-	"github.com/gotk3/gotk3/gtk"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 	"github.com/wowtuff/ricing/tools"
 )
 
@@ -285,32 +288,46 @@ func runWithPrivilegePrompt(ctx context.Context, operation, name string, args ..
 }
 
 func promptSudoPassword(ctx context.Context, operation string) (string, error) {
-	if !commandExists("zenity") {
-		return "", errors.New("zenity is required for graphical sudo prompt but was not found")
-	}
+	var password string
+	var cancelled bool
 
-	text := fmt.Sprintf(
+	myApp := app.New()
+	w := myApp.NewWindow("password client")
+	w.SetTitle("Authentication Required")
+
+	text := widget.NewLabel(fmt.Sprintf(
 		"Authentication is required to perform:\n\n%s\n\nEnter your sudo password:",
 		operation,
-	)
+	))
 
-	cmd := exec.CommandContext(
-		ctx,
-		"zenity",
-		"--password",
-		"--title=Authentication Required",
-		"--text="+text,
-	)
-
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return "", ErrAuthCancelled
-		}
-		return "", fmt.Errorf("failed to open password dialog: %w", err)
+	passwordEntry := widget.NewPasswordEntry()
+	passwordEntry.OnSubmitted = func(_ string) {
+		password = passwordEntry.Text
+		w.Close()
 	}
 
-	password := strings.TrimRight(string(out), "\r\n")
+	submitBtn := widget.NewButton("OK", func() {
+		password = passwordEntry.Text
+		w.Close()
+	})
+
+	cancelBtn := widget.NewButton("Cancel", func() {
+		cancelled = true
+		w.Close()
+	})
+
+	w.SetContent(container.NewVBox(
+		text,
+		passwordEntry,
+		container.NewHBox(cancelBtn, submitBtn),
+	))
+
+	w.ShowAndRun()
+
+	if cancelled {
+		return "", ErrAuthCancelled
+	}
+
 	if strings.TrimSpace(password) == "" {
 		return "", ErrAuthCancelled
 	}
