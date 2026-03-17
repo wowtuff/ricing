@@ -48,7 +48,8 @@ RUN pacman -S --noconfirm \
     noto-fonts \
     noto-fonts-emoji \
     ttf-jetbrains-mono \
-    ttf-nerd-fonts-symbols
+    ttf-nerd-fonts-symbols \
+    base-devel
 
 # download a pinned pre-0.54 Hyprland stack from archive()
 RUN set -eux; \

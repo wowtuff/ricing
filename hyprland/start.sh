@@ -47,7 +47,7 @@ su - "$user" -c "
     export HYPRLAND_NO_SD_NOTIFY=1
     export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus
     dbus-daemon --session --address=unix:path=$runtime_dir/bus --fork
-    exec Hyprland
+    exec start-hyprland
 " &
 HYPRLAND_PID=$!
 
@@ -69,6 +69,14 @@ if [ -z "$SOCKET" ]; then
 fi
 
 export HYPRLAND_INSTANCE_SIGNATURE="$SOCKET"
+su - "$user" -c "
+    export XDG_RUNTIME_DIR=$runtime_dir
+    export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
+    hyprctl -j monitors all | jq -r '.[].name' | while read -r mon; do
+        hyprctl keyword monitor "\$mon,disabled"
+    done
+" || true
+
 
 WAYLAND_DISPLAY_SOCKET=""
 for s in "$runtime_dir"/wayland-*; do
@@ -86,6 +94,8 @@ fi
 
 echo "      Wayland display: $WAYLAND_DISPLAY_SOCKET"
 
+
+
 echo "[3/4] Creating virtual display..."
 su - "$user" -c "
     export XDG_RUNTIME_DIR=$runtime_dir
@@ -100,8 +110,8 @@ HEADLESS_OUTPUT="$(
     su - "$user" -c "
         export XDG_RUNTIME_DIR=$runtime_dir
         export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
-        hyprctl monitors all
-    " | sed -n 's/^Monitor \([^ ]*\).*/\1/p' | grep -v '^eDP' | grep -v '^HDMI' | tail -n1
+        hyprctl -j monitors all
+    " | jq -r '.[] | select(.make == "" and .model == "") | .name' | tail -n1
 )"
 
 if [ -z "${HEADLESS_OUTPUT:-}" ]; then
