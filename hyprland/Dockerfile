@@ -1,6 +1,6 @@
 FROM archlinux:latest
 
-# init keyring
+# initial keyring
 RUN pacman-key --init && pacman-key --populate archlinux
 
 # refresh normal repos first
@@ -21,7 +21,7 @@ RUN pacman -S --noconfirm \
     python-pip \
     ca-certificates
 
-# locale
+# set locale
 RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
     locale-gen && \
     echo "LANG=en_US.UTF-8" > /etc/locale.conf
@@ -50,7 +50,7 @@ RUN pacman -S --noconfirm \
     ttf-jetbrains-mono \
     ttf-nerd-fonts-symbols
 
-# download a pinned pre-0.54 Hyprland stack from archive
+# download a pinned pre-0.54 Hyprland stack from archive()
 RUN set -eux; \
     mkdir -p /tmp/hyprpkgs; \
     curl -fL --retry 5 --retry-delay 3 -o /tmp/hyprpkgs/hyprutils.pkg.tar.zst \

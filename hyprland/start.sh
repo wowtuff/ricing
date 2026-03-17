@@ -46,7 +46,6 @@ su - "$user" -c "
     export LIBSEAT_BACKEND=seatd
     export HYPRLAND_NO_SD_NOTIFY=1
     export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus
-
     dbus-daemon --session --address=unix:path=$runtime_dir/bus --fork
     exec Hyprland
 " &
@@ -91,7 +90,7 @@ echo "[3/4] Creating virtual display..."
 su - "$user" -c "
     export XDG_RUNTIME_DIR=$runtime_dir
     export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
-    hyprctl output create headless
+    hyprctl output create headless 1920x1080
 " || true
 
 sleep 2
@@ -102,7 +101,7 @@ HEADLESS_OUTPUT="$(
         export XDG_RUNTIME_DIR=$runtime_dir
         export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
         hyprctl monitors all
-    " | sed -n 's/^Monitor \(HEADLESS-[^ ]*\).*/\1/p' | tail -n1
+    " | sed -n 's/^Monitor \([^ ]*\).*/\1/p' | grep -v '^eDP' | grep -v '^HDMI' | tail -n1
 )"
 
 if [ -z "${HEADLESS_OUTPUT:-}" ]; then
