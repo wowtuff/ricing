@@ -11,6 +11,8 @@ func NewDefaultRegistry() *tools.Registry {
 	reg.Register(NotifyTool{})
 	reg.Register(&CmdTool{})
 	reg.Register(&InstallPackageTool{})
+	reg.Register(&ReadFileTool{})
+	reg.Register(&ApplyPatchTool{})
 
 	return reg
 }
