@@ -44,6 +44,7 @@ func (t *SystemInfoTool) Run(ctx context.Context, args map[string]any) (map[stri
 	memInfo := parseMemInfo()
 	desktop, desktopRaw, sessionType, desktopIDs := currentDesktopInfo()
 	appearance := collectAppearanceState(ctx)
+	availableGTKThemes := gtkThemeNames()
 
 	userName := firstNonEmpty(os.Getenv("USER"), os.Getenv("LOGNAME"))
 	homeDir, _ := os.UserHomeDir()
@@ -97,8 +98,10 @@ func (t *SystemInfoTool) Run(ctx context.Context, args map[string]any) (map[stri
 			"shell":               os.Getenv("SHELL"),
 			"lang":                firstNonEmpty(os.Getenv("LANG"), os.Getenv("LC_ALL")),
 		},
-		"package_managers": packageManagers,
-		"appearance":       appearance,
+		"package_managers":             packageManagers,
+		"appearance":                   appearance,
+		"available_gtk_themes":         availableGTKThemes,
+		"available_gtk_themes_by_mode": groupThemesByMode(availableGTKThemes),
 	}, nil
 }
 
