@@ -13,6 +13,8 @@ func NewDefaultRegistry() *tools.Registry {
 	reg.Register(&InstallPackageTool{})
 	reg.Register(&ReadFileTool{})
 	reg.Register(&ApplyPatchTool{})
+	reg.Register(&SystemInfoTool{})
+	reg.Register(&ServiceLogsTool{})
 
 	return reg
 }
