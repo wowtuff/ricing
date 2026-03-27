@@ -1,0 +1,5 @@
+XTerm*faceName: DejaVu Sans Mono
+XTerm*faceSize: 10
+XTerm*background: #11111b
+XTerm*foreground: #cdd6f4
+XTerm*cursorColor: #f5e0dc

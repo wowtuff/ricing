@@ -44,6 +44,7 @@ require_cmd() {
 
 list_profiles() {
     echo "arch-hyprland"
+    echo "arch-i3"
 }
 
 set_profile() {
@@ -53,6 +54,8 @@ set_profile() {
             DOCKERFILE="$MYDIR/Dockerfile"
             START_FILE="$MYDIR/start.sh"
             REFRESH_FILE="$MYDIR/refresh.sh"
+            START_CMD="/workspace/start.sh"
+            REFRESH_CMD="/workspace/refresh.sh"
             RUNTIME_FILES=(
                 "$MYDIR/hyprland.conf"
                 "$MYDIR/generated.conf"
@@ -62,6 +65,17 @@ set_profile() {
                 "$MYDIR/dunst"
                 "$MYDIR/swww"
             )
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
+            BUILD_FILES=("$DOCKERFILE")
+            ;;
+        arch-i3)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-i3/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-i3/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-i3/refresh.sh"
+            START_CMD="/workspace/profiles/arch-i3/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-i3/refresh.sh"
+            RUNTIME_FILES=("$MYDIR/profiles/arch-i3/runtime")
             RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
             BUILD_FILES=("$DOCKERFILE")
             ;;
@@ -119,8 +133,22 @@ build_image() {
     docker build -t "$IMAGE" -f "$DOCKERFILE" "$MYDIR"
 }
 
+replace_if_needed() {
+    local cur
+    if ! is_running; then
+        return
+    fi
+    cur=$(current_profile)
+    if [ "$cur" = "$PROFILE" ]; then
+        return
+    fi
+    echo "switching preview from ${cur:-unknown} to $PROFILE..."
+    docker rm -f "$CONTAINER" 2>/dev/null || true
+}
+
 run_attached() {
     ensure_host_paths
+    replace_if_needed
     if is_running; then
         need_profile
         show_endpoints
@@ -142,11 +170,12 @@ run_attached() {
         -e COLORTERM=truecolor \
         -v "$MYDIR:/workspace" \
         -v "$DATA_VOL:/home/hypruser/.local/share" \
-        "$IMAGE" /bin/bash /workspace/start.sh
+        "$IMAGE" /bin/bash "$START_CMD"
 }
 
 run_detached() {
     ensure_host_paths
+    replace_if_needed
     if is_running; then
         need_profile
         show_endpoints
@@ -168,7 +197,7 @@ run_detached() {
         -e COLORTERM=truecolor \
         -v "$MYDIR:/workspace" \
         -v "$DATA_VOL:/home/hypruser/.local/share" \
-        "$IMAGE" /bin/bash /workspace/start.sh >/dev/null
+        "$IMAGE" /bin/bash "$START_CMD" >/dev/null
     show_endpoints
     echo "use: ./run.sh logs"
 }
@@ -253,7 +282,7 @@ inspect_container() {
 
 refresh_container() {
     need_profile
-    docker exec -u hypruser "$CONTAINER" /bin/bash /workspace/refresh.sh
+    docker exec -u hypruser "$CONTAINER" /bin/bash "$REFRESH_CMD"
 }
 
 stop_container() {
