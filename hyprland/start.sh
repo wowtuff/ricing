@@ -9,9 +9,48 @@ uid=1000
 user=hypruser
 runtime_dir=/run/user/$uid
 rice_dir=/home/$user/.rice
+cfg_dir=/home/$user/.config
+src_dir=/workspace
 mkdir -p "$rice_dir"
 
 exec > >(tee -a "$rice_dir/boot.log") 2>&1
+
+link_path() {
+    local src=$1
+    local dst=$2
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst"
+    ln -s "$src" "$dst"
+    chown -h "$user:$user" "$dst"
+}
+
+write_env() {
+    cat > "$rice_dir/session.env" <<EOF
+export XDG_RUNTIME_DIR=$runtime_dir
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=Hyprland
+export AQ_BACKENDS=headless
+export WLR_RENDERER=pixman
+export EGL_PLATFORM=surfaceless
+export LIBSEAT_BACKEND=seatd
+export HYPRLAND_NO_SD_NOTIFY=1
+export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus
+export HYPRLAND_INSTANCE_SIGNATURE=$SOCKET
+export WAYLAND_DISPLAY=$WAYLAND_DISPLAY_SOCKET
+export HEADLESS_OUTPUT=$HEADLESS_OUTPUT
+EOF
+    chown "$user:$user" "$rice_dir/session.env"
+}
+
+if [ -d "$src_dir" ]; then
+    link_path "$src_dir/hyprland.conf" "$cfg_dir/hypr/hyprland.conf"
+    link_path "$src_dir/generated.conf" "$cfg_dir/hypr/generated.conf"
+    link_path "$src_dir/kitty" "$cfg_dir/kitty"
+    link_path "$src_dir/waybar" "$cfg_dir/waybar"
+    link_path "$src_dir/rofi" "$cfg_dir/rofi"
+    link_path "$src_dir/dunst" "$cfg_dir/dunst"
+    link_path "$src_dir/swww" "$cfg_dir/swww"
+fi
 
 dbus-uuidgen > /etc/machine-id 2>/dev/null || true
 
@@ -126,6 +165,7 @@ if [ -z "${HEADLESS_OUTPUT:-}" ]; then
 fi
 
 echo "      Using output: $HEADLESS_OUTPUT"
+write_env
 
 echo "[4/4] Starting wayvnc on :5070..."
 su - "$user" -c "
