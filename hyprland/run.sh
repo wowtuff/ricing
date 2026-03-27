@@ -45,6 +45,7 @@ require_cmd() {
 list_profiles() {
     echo "arch-hyprland"
     echo "arch-i3"
+    echo "debian-i3"
 }
 
 set_profile() {
@@ -76,6 +77,17 @@ set_profile() {
             START_CMD="/workspace/profiles/arch-i3/start.sh"
             REFRESH_CMD="/workspace/profiles/arch-i3/refresh.sh"
             RUNTIME_FILES=("$MYDIR/profiles/arch-i3/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
+            BUILD_FILES=("$DOCKERFILE")
+            ;;
+        debian-i3)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/debian-i3/Dockerfile"
+            START_FILE="$MYDIR/profiles/debian-i3/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/debian-i3/refresh.sh"
+            START_CMD="/workspace/profiles/debian-i3/start.sh"
+            REFRESH_CMD="/workspace/profiles/debian-i3/refresh.sh"
+            RUNTIME_FILES=("$MYDIR/profiles/debian-i3/runtime")
             RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
             BUILD_FILES=("$DOCKERFILE")
             ;;

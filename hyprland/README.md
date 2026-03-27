@@ -1,113 +1,70 @@
 ## what's inside
 
-- **archlinux** as the base
-- **hyprland 0.53.3** (pinned from archive)
-- **waybar**, **rofi**, **foot**, **kitty** for that classic hyprland rice
-- **wayvnc** + **noVNC** so you can access the desktop from your browser
-- **dunst** for notifications
-- **swww** for wallpaper
-- **grim** + **slurp** for screenshots
+- `arch-hyprland` for the original headless Hyprland preview
+- `arch-i3` for an Arch X11 i3 preview
+- `debian-i3` for a Debian X11 i3 preview
+- one live preview container on `localhost:5070` and `http://localhost:6090`
+- session-aware `shell`, `exec`, `refresh`, and `watch` commands
 
 ## quick start
 
 ```bash
-# build the docker image
+./run.sh list
 ./run.sh build
-
-# run it (attached - you'll see logs)
-./run.sh run
-
-# or run in background
 ./run.sh up
-
-# check what's running
-./run.sh status
+./run.sh exec -- kitty
 ```
 
-## accessing the desktop
+switch profiles with `--profile`:
 
-once the container is running:
-
-- **VNC client**: connect to `localhost:5070`
-- **browser**: open `http://localhost:6090`
-
-the default config uses:
-- `super + return` → open terminal (foot)
-- `super + d` → app launcher (rofi)
-- `super + q` → close window
-- `super + f` → fullscreen
-- `super + e` → open kitty
+```bash
+./run.sh build --profile arch-i3
+./run.sh up --profile arch-i3
+./run.sh build --profile debian-i3
+./run.sh up --profile debian-i3
+```
 
 ## available commands
 
 | command | what it does |
 |---------|--------------|
-| `build` | build the docker image |
-| `rebuild` | nuke old image and rebuild |
-| `run` | start container attached |
-| `up` | start container detached |
-| `restart` | restart detached container |
-| `shell` | get root shell inside container |
-| `user` | get hypruser shell inside container |
+| `list` | show shipped profiles |
+| `build` | build the selected profile image |
+| `rebuild` | remove the selected image and rebuild it |
+| `run` | start or reuse the selected preview and stream logs |
+| `up` | start or reuse the selected preview in the background |
+| `restart` | restart the selected preview |
+| `shell` | open a session shell inside the live preview |
+| `user` | alias for `shell` |
+| `root` | open a root shell inside the live container |
+| `exec` | run a command inside the live preview session |
+| `refresh` | reload the running preview |
+| `watch` | watch files and refresh or restart when they change |
 | `logs` | follow container logs |
-| `status` | show image/container status |
-| `inspect` | dump debug info |
-| `stop` | stop the container |
-| `clean` | remove container, image, and volume |
+| `status` | show image and container state |
+| `inspect` | dump useful debug info |
+| `stop` | stop the running preview |
+| `clean` | remove the container, image, and data volume |
 
 ## how it works
 
-### dockerfile
-sets up archlinux, installs all the wayland/hyprland dependencies, downloads a pinned hyprland 0.53.3 from the arch archive (since it's more stable than latest), and adds noVNC for browser access.
+- `run.sh` keeps one active preview container and swaps it when you change profiles
+- the whole `hyprland/` folder is mounted into the container as `/workspace`
+- runtime files come from the mounted workspace, so config and startup edits do not need an image rebuild
+- `shell` and `exec` load the live session env, so commands affect the same GUI you see in noVNC
+- `watch` refreshes runtime config changes, restarts when startup scripts change, and tells you when a rebuild is required
 
-### run.sh
-handles building and running the container. it mounts your local config directories into the container so you can edit configs on your host and see changes immediately.
+## profile notes
 
-### start.sh
-the container entrypoint. it:
-1. starts **seatd** (seat daemon for logind)
-2. launches **hyprland** in headless mode
-3. creates a virtual display
-4. starts **wayvnc** on port 5070
-5. starts **noVNC** websocket proxy on port 6090
-
-### hyprland.conf
-basic hyprland config. it sources `~/.config/hypr/generated.conf` at the end so you can add your own stuff there without touching the main config.
-
-## project structure
-
-```
-.
-├── dockerfile          # builds the image
-├── run.sh              # build & run script
-├── start.sh            # container entrypoint
-├── hyprland.conf       # hyprland config
-├── generated.conf      # your custom config (gitignored)
-├── kitty/              # kitty terminal config
-├── waybar/             # waybar config
-├── rofi/               # rofi config
-├── dunst/              # dunst config
-└── swww/               # swww wallpaper config
-```
-
-## notes
-
-- the container runs as user `hypruser` (uid 1000)
-- all your config dirs are mounted from your host, so edits are instant
-- the display runs headless, which is why you need VNC/noVNC to see anything
-- if hyprland crashes, the container stays alive for 60 minutes so you can inspect it with `./run.sh inspect`
+- `arch-hyprland` uses Hyprland, `wayvnc`, and noVNC
+- `arch-i3` uses Xvfb, i3, `x11vnc`, and noVNC
+- `debian-i3` uses the same X11 preview path on Debian
 
 ## troubleshooting
 
 ```bash
-# can't connect to VNC?
+./run.sh status
 ./run.sh logs
-
-# check what's actually running inside
 ./run.sh inspect
-
-# get a shell to debug
 ./run.sh shell
 ```
-
-enjoy your preview :)
