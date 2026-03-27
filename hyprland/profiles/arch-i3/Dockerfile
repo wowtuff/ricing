@@ -1,7 +1,12 @@
 FROM archlinux:latest
 
+RUN printf '%s\n' \
+    'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+    'Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch' \
+    > /etc/pacman.d/mirrorlist
+
 RUN pacman-key --init && pacman-key --populate archlinux
-RUN pacman -Syyu --noconfirm && pacman -S --noconfirm \
+RUN pacman -Syyu --noconfirm --disable-download-timeout && pacman -S --noconfirm --disable-download-timeout \
     bash \
     sudo \
     dbus \
@@ -13,9 +18,12 @@ RUN pacman -Syyu --noconfirm && pacman -S --noconfirm \
     xorg-server-xvfb \
     x11vnc \
     xorg-xauth \
+    xorg-xrdb \
     xorg-xsetroot \
     xterm \
     dmenu \
+    jack2 \
+    firefox \
     i3-wm \
     i3status \
     ttf-dejavu \

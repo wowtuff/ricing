@@ -1,19 +1,43 @@
 # i3 config file (v4)
 set $mod Mod4
+set $term xterm
+set $browser firefox-esr --new-window about:blank
+set $menu dmenu_run
 font pango:DejaVu Sans Mono 10
 floating_modifier $mod
-exec --no-startup-id xterm -fa 'DejaVu Sans Mono' -fs 10
-bindsym $mod+Return exec xterm -fa 'DejaVu Sans Mono' -fs 10
-bindsym $mod+d exec dmenu_run
+exec --no-startup-id $term
+bindsym $mod+Return exec $term
+bindsym Mod1+Return exec $term
+bindsym F1 exec $term
+bindsym $mod+b exec $browser
+bindsym Mod1+b exec $browser
+bindsym F2 exec $browser
+bindsym $mod+d exec $menu
+bindsym Mod1+space exec $menu
+bindsym F3 exec $menu
 bindsym $mod+Shift+q kill
 bindsym $mod+Shift+r restart
 bindsym $mod+Shift+c reload
 bindsym $mod+f fullscreen toggle
+bindsym F5 reload
 new_window pixel 2
 new_float pixel 2
-gaps inner 8
-gaps outer 12
+gaps inner 6
+gaps outer 10
 focus_follows_mouse no
+client.focused          #3b1d14 #3b1d14 #fff7ed #fb923c #3b1d14
+client.unfocused        #1f2937 #1f2937 #cbd5e1 #4b5563 #1f2937
+client.focused_inactive #312e81 #312e81 #e0e7ff #6366f1 #312e81
+client.urgent           #991b1b #991b1b #fee2e2 #ef4444 #991b1b
 bar {
     status_command i3status
+    colors {
+        background         #111827
+        statusline         #fff7ed
+        separator          #4b5563
+        focused_workspace  #fb923c #fb923c #111827
+        active_workspace   #312e81 #312e81 #e0e7ff
+        inactive_workspace #1f2937 #1f2937 #cbd5e1
+        urgent_workspace   #ef4444 #ef4444 #ffffff
+    }
 }

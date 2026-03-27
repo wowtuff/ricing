@@ -2,9 +2,24 @@
     "layer": "top",
     "position": "top",
     "height": 30,
-    "modules-left": ["hyprland/workspaces"],
+    "modules-left": ["custom/term", "custom/browser", "custom/menu", "hyprland/workspaces"],
     "modules-center": ["clock"],
-    "modules-right": ["pulseaudio", "network", "battery"],
+    "modules-right": ["network"],
+    "custom/term": {
+        "format": "TERM",
+        "tooltip": "Open terminal: F1, Alt+Enter, or Super+Enter",
+        "on-click": "foot"
+    },
+    "custom/browser": {
+        "format": "WEB",
+        "tooltip": "Open Firefox: F2, Alt+B, or Super+B",
+        "on-click": "firefox --new-window about:blank"
+    },
+    "custom/menu": {
+        "format": "APPS",
+        "tooltip": "Open launcher: F3, Alt+Space, or Super+D",
+        "on-click": "rofi -show drun"
+    },
     "hyprland/workspaces": {
         "disable-scroll": false,
         "all-outputs": true,
@@ -32,22 +47,6 @@
         "format-alt": "{:%Y-%m-%d}",
         "tooltip-format": "{:%Y-%m-%d | %H:%M}"
     },
-    "pulseaudio": {
-        "format": "{icon} {volume}%",
-        "format-bluetooth": "{icon} {volume}%",
-        "format-bluetooth-muted": "󰝟",
-        "format-muted": "󰝟",
-        "format-icons": {
-            "headphone": "󰋋",
-            "hands-free": "�徵",
-            "headset": "󰋎",
-            "phone": "󰌞",
-            "portable": "󰌟",
-            "car": "󰄞",
-            "default": ["󰕿", "󰖀", "󰕾"]
-        },
-        "on-click": "pavucontrol"
-    },
     "network": {
         "format-wifi": "󰤨 {signalStrength}%",
         "format-ethernet": "󰈀",
@@ -56,17 +55,5 @@
         "format-disconnected": "󰤭",
         "format-alt": "{ifname}: {ipaddr}",
         "interval": 5
-    },
-    "battery": {
-        "states": {
-            "good": 95,
-            "warning": 30,
-            "critical": 15
-        },
-        "format": "{icon} {capacity}%",
-        "format-charging": "󰂄 {capacity}%",
-        "format-plugged": "󰂄 {capacity}%",
-        "format-alt": "{icon} {time}",
-        "format-icons": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
     }
 }

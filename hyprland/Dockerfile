@@ -1,13 +1,18 @@
 FROM archlinux:latest
 
+RUN printf '%s\n' \
+    'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+    'Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch' \
+    > /etc/pacman.d/mirrorlist
+
 # initial keyring
 RUN pacman-key --init && pacman-key --populate archlinux
 
 # refresh normal repos first
-RUN pacman -Syyu --noconfirm
+RUN pacman -Syyu --noconfirm --disable-download-timeout
 
 # install base tools first from normal mirrors
-RUN pacman -S --noconfirm \
+RUN pacman -S --noconfirm --disable-download-timeout \
     glibc \
     bash \
     sudo \
@@ -30,14 +35,16 @@ ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # install non-Hyprland preview stack from normal mirrors
-RUN pacman -S --noconfirm \
+RUN pacman -S --noconfirm --disable-download-timeout \
     wayland \
     wayland-protocols \
     xorg-xwayland \
     libinput \
     wayvnc \
+    jack2 \
     foot \
     kitty \
+    firefox \
     waybar \
     rofi-wayland \
     swww \

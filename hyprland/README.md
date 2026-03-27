@@ -12,7 +12,7 @@
 ./run.sh list
 ./run.sh build
 ./run.sh up
-./run.sh exec -- kitty
+./run.sh exec -- bash -lc 'printf "%s\n" "$XDG_SESSION_TYPE $XDG_CURRENT_DESKTOP"'
 ```
 
 switch profiles with `--profile`:
@@ -26,25 +26,23 @@ switch profiles with `--profile`:
 
 ## available commands
 
-| command | what it does |
-|---------|--------------|
-| `list` | show shipped profiles |
-| `build` | build the selected profile image |
-| `rebuild` | remove the selected image and rebuild it |
-| `run` | start or reuse the selected preview and stream logs |
-| `up` | start or reuse the selected preview in the background |
-| `restart` | restart the selected preview |
-| `shell` | open a session shell inside the live preview |
-| `user` | alias for `shell` |
-| `root` | open a root shell inside the live container |
-| `exec` | run a command inside the live preview session |
-| `refresh` | reload the running preview |
-| `watch` | watch files and refresh or restart when they change |
-| `logs` | follow container logs |
-| `status` | show image and container state |
-| `inspect` | dump useful debug info |
-| `stop` | stop the running preview |
-| `clean` | remove the container, image, and data volume |
+- `list` shows shipped profiles
+- `build` builds the selected profile image
+- `rebuild` removes the selected image and rebuilds it
+- `run` starts or reuses the selected preview and streams logs
+- `up` starts or reuses the selected preview in the background
+- `restart` restarts the selected preview
+- `shell` opens a session shell inside the live preview
+- `user` is an alias for `shell`
+- `root` opens a root shell inside the live container
+- `exec` runs a command inside the live preview session
+- `refresh` reloads the running preview
+- `watch` watches files and refreshes or restarts when they change
+- `logs` follows container logs
+- `status` shows image and container state
+- `inspect` dumps useful debug info
+- `stop` stops the running preview
+- `clean` removes the container, image, and data volume
 
 ## how it works
 

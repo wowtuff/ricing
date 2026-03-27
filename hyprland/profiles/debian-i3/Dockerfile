@@ -15,9 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     x11vnc \
     xauth \
+    x11-utils \
     x11-xserver-utils \
     xterm \
     dmenu \
+    firefox-esr \
     i3-wm \
     i3status \
     fonts-dejavu-core \
