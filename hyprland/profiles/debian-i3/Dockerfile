@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     python3 \
+    kitty \
+    fastfetch \
     python3-pip \
     ca-certificates \
     xvfb \

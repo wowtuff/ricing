@@ -46,6 +46,8 @@ RUN pacman -S --noconfirm --disable-download-timeout \
     kitty \
     firefox \
     waybar \
+    kitty \
+    fastfetch \
     rofi-wayland \
     swww \
     dunst \
