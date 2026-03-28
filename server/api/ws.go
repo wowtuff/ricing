@@ -23,8 +23,10 @@ type wsClientMsg struct {
 }
 
 type wsSubscribe struct {
-	RunID    string `json:"run_id"`
-	AfterSeq int64  `json:"after_seq"`
+	RunID     string `json:"run_id"`
+	SessionID string `json:"session_id"`
+	Catalog   bool   `json:"catalog"`
+	AfterSeq  int64  `json:"after_seq"`
 }
 
 type wsCancel struct {
@@ -101,14 +103,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			case "subscribe":
 				var sub wsSubscribe
 				if err := json.Unmarshal(msg.Data, &sub); err != nil || sub.RunID == "" {
-					emit(map[string]any{"v": 1, "type": "error", "data": map[string]any{"code": "bad_subscribe", "message": "bad subscribe payload"}})
-					continue
-				}
-
-				hub, ok := s.runs.Hub(sub.RunID)
-				if !ok {
-					emit(map[string]any{"v": 1, "type": "error", "data": map[string]any{"code": "run_not_found", "message": "run not found"}})
-					continue
+					if err != nil || (!sub.Catalog && sub.RunID == "" && sub.SessionID == "") {
+						emit(map[string]any{"v": 1, "type": "error", "data": map[string]any{"code": "bad_subscribe", "message": "bad subscribe payload"}})
+						continue
+					}
 				}
 
 				if unsubscribe != nil {
@@ -117,7 +115,58 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					subWG.Wait()
 				}
 
-				// backlog
+				if sub.Catalog {
+					hub := s.sessions.CatalogHub()
+					emit(map[string]any{"v": 1, "type": "session.snapshot", "data": map[string]any{"sessions": s.sessions.List()}})
+					for _, ev := range hub.ListAfter(sub.AfterSeq) {
+						emit(ev)
+					}
+					_, ch, unsub := hub.Subscribe()
+					unsubscribe = unsub
+					subWG.Add(1)
+					go func() {
+						defer subWG.Done()
+						for ev := range ch {
+							emit(ev)
+						}
+					}()
+					emit(map[string]any{"v": 1, "type": "subscribed", "data": map[string]any{"catalog": true, "after_seq": sub.AfterSeq}})
+					continue
+				}
+
+				if sub.SessionID != "" {
+					snapshot, ok := s.sessions.Get(sub.SessionID)
+					if !ok {
+						emit(map[string]any{"v": 1, "type": "error", "data": map[string]any{"code": "session_not_found", "message": "session not found"}})
+						continue
+					}
+					hub, ok := s.sessions.Hub(sub.SessionID)
+					if !ok {
+						emit(map[string]any{"v": 1, "type": "error", "data": map[string]any{"code": "session_not_found", "message": "session not found"}})
+						continue
+					}
+					emit(map[string]any{"v": 1, "type": "session.snapshot", "data": snapshot})
+					for _, ev := range hub.ListAfter(sub.AfterSeq) {
+						emit(ev)
+					}
+					_, ch, unsub := hub.Subscribe()
+					unsubscribe = unsub
+					subWG.Add(1)
+					go func() {
+						defer subWG.Done()
+						for ev := range ch {
+							emit(ev)
+						}
+					}()
+					emit(map[string]any{"v": 1, "type": "subscribed", "data": map[string]any{"session_id": sub.SessionID, "after_seq": sub.AfterSeq}})
+					continue
+				}
+
+				hub, ok := s.runs.Hub(sub.RunID)
+				if !ok {
+					emit(map[string]any{"v": 1, "type": "error", "data": map[string]any{"code": "run_not_found", "message": "run not found"}})
+					continue
+				}
 				for _, ev := range hub.ListAfter(sub.AfterSeq) {
 					emit(ev)
 				}
@@ -131,7 +180,6 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 						emit(ev)
 					}
 				}()
-
 				emit(map[string]any{"v": 1, "type": "subscribed", "data": map[string]any{"run_id": sub.RunID, "after_seq": sub.AfterSeq}})
 
 			case "run.cancel":

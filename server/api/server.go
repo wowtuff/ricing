@@ -13,18 +13,21 @@ type Server struct {
 	httpSrv   *http.Server
 	reg       *tools.Registry
 	providers *service.ProviderService
+	sessions  *service.SessionService
 	runs      *service.RunService
 	uiDir     string
 }
 
 func NewServer(addr string, reg *tools.Registry, uiDir string) *Server {
 	providers := service.NewProviderService()
+	sessions := service.NewSessionService("")
 	runs := service.NewRunService(reg, providers)
 
 	s := &Server{
 		addr:      addr,
 		reg:       reg,
 		providers: providers,
+		sessions:  sessions,
 		runs:      runs,
 		uiDir:     uiDir,
 	}
@@ -78,6 +81,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// runs
 	mux.HandleFunc("/api/v1/runs", s.handleRuns)
 	mux.HandleFunc("/api/v1/runs/", s.handleRunActions)
+	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
+	mux.HandleFunc("/api/v1/sessions/", s.handleSessionActions)
+	mux.HandleFunc("/api/v1/approvals", s.handleApprovals)
+	mux.HandleFunc("/api/v1/approvals/", s.handleApprovalActions)
 
 	// websocket
 	mux.HandleFunc("/api/v1/ws", s.handleWS)

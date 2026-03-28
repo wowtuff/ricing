@@ -6,12 +6,13 @@ import (
 )
 
 type Event struct {
-	V     int    `json:"v"`
-	Type  string `json:"type"`
-	RunID string `json:"run_id,omitempty"`
-	Seq   int64  `json:"seq"`
-	Time  string `json:"time"`
-	Data  any    `json:"data,omitempty"`
+	V         int    `json:"v"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	Seq       int64  `json:"seq"`
+	Time      string `json:"time"`
+	Data      any    `json:"data,omitempty"`
 }
 
 type RunHub struct {
