@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ricing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark">r</div>
+        <div class="brand-copy">
+          <h1>ricing terminal</h1>
+          <p>shared backend, dual clients</p>
+        </div>
+      </div>
+      <div class="topbar-meta">
+        <button class="topbar-button" id="providerAction">connect</button>
+        <div class="status-pill" id="providerStatus">checking backend</div>
+      </div>
+    </header>
+    <div class="workspace">
+      <aside class="session-rail">
+        <div class="rail-header">
+          <div>
+            <p class="eyebrow">sessions</p>
+            <p class="rail-title">local instance</p>
+          </div>
+          <button class="ghost-button" id="newSessionButton">new</button>
+        </div>
+        <div class="rail-search">
+          <input id="sessionSearch" type="search" placeholder="search sessions">
+        </div>
+        <div class="session-list" id="sessionList"></div>
+      </aside>
+      <main class="main-pane">
+        <div class="session-banner" id="sessionBanner">
+          <div>
+            <p class="eyebrow" id="sessionModeLabel">auto</p>
+            <h2 id="sessionTitle">select a session</h2>
+          </div>
+          <div class="session-banner-meta">
+            <span class="status-pill subtle" id="sessionState">idle</span>
+            <select id="modeSelect">
+              <option value="auto">auto</option>
+              <option value="plan">plan</option>
+              <option value="build">build</option>
+            </select>
+          </div>
+        </div>
+        <div class="connect-panel" id="connectPanel">
+          <div class="connect-card">
+            <p class="eyebrow">provider</p>
+            <h3>link chatgpt to start</h3>
+            <p>the browser UI and the cli use the same backend session history.</p>
+            <button class="primary-button" id="connectButton">connect with chatgpt</button>
+          </div>
+        </div>
+        <div class="empty-panel" id="emptyPanel">
+          <div class="empty-copy">
+            <p class="eyebrow">ready</p>
+            <h3>start a new session or open an existing one</h3>
+            <p>plans, changes, approvals, files and verification all stay attached to the same backend session.</p>
+          </div>
+        </div>
+        <div class="transcript" id="transcript"></div>
+        <div class="composer">
+          <div class="composer-toolbar">
+            <button class="ghost-button" id="attachButton">add files</button>
+            <div class="composer-hint" id="attachmentSummary">no files attached</div>
+            <button class="ghost-button danger" id="stopButton">stop</button>
+          </div>
+          <textarea id="promptInput" placeholder="tell the agent what to change, verify, or plan"></textarea>
+          <div class="composer-actions">
+            <div class="composer-hint" id="composerStatus">ready</div>
+            <button class="primary-button" id="sendButton">send</button>
+          </div>
+          <input id="fileInput" type="file" multiple hidden>
+        </div>
+      </main>
+      <aside class="activity-pane">
+        <section class="activity-section">
+          <div class="section-head">
+            <p class="eyebrow">activity</p>
+            <span class="status-pill subtle" id="runStatus">idle</span>
+          </div>
+          <div class="now-card" id="nowCard">waiting for the next step</div>
+        </section>
+        <section class="activity-section">
+          <div class="section-head">
+            <p class="eyebrow">pending approvals</p>
+          </div>
+          <div class="approval-list" id="approvalList"></div>
+        </section>
+        <section class="activity-section">
+          <div class="section-head">
+            <p class="eyebrow">attachments</p>
+          </div>
+          <div class="attachment-list" id="attachmentList"></div>
+        </section>
+        <section class="activity-section stretch">
+          <div class="section-head">
+            <p class="eyebrow">tool timeline</p>
+          </div>
+          <div class="activity-list" id="activityList"></div>
+        </section>
+      </aside>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

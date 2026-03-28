@@ -533,6 +533,7 @@ func (s *SessionService) publishSessionUpdate(st *sessionState) {
 	st.mu.Lock()
 	session := st.snapshot.Session
 	st.mu.Unlock()
+	st.hub.Publish("session.updated", map[string]any{"session": session})
 	s.catalog.Publish("session.updated", map[string]any{"session": session})
 }
 
