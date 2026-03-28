@@ -41,6 +41,7 @@ type StreamSink struct {
 	OnDelta      func(text string)
 	OnToolCall   func(call StreamToolCall)
 	OnToolResult func(res ToolResult)
+	ExecuteTool  func(ctx context.Context, call StreamToolCall) (ToolResult, error)
 }
 
 // runstream is the streaming entry point routes to the chatgpt websocket path or the generic rest path depending on the backend in opts
@@ -166,14 +167,13 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 		for _, tc := range pendingToolCalls {
 			var args map[string]any
 			_ = json.Unmarshal([]byte(tc.Arguments), &args)
+			call := StreamToolCall{ID: tc.ID, CallID: tc.CallID, Name: tc.Name, Arguments: args}
 			if sink.OnToolCall != nil {
-				sink.OnToolCall(StreamToolCall{ID: tc.ID, CallID: tc.CallID, Name: tc.Name, Arguments: args})
+				sink.OnToolCall(call)
 			}
-			resultJSON := executeToolByName(ctx, reg, ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments})
-			var out any
-			_ = json.Unmarshal([]byte(resultJSON), &out)
+			res, resultJSON := executeStreamTool(ctx, reg, call, tc.Arguments, sink)
 			if sink.OnToolResult != nil {
-				sink.OnToolResult(ToolResult{ToolCallID: tc.ID, CallID: tc.CallID, Output: out})
+				sink.OnToolResult(res)
 			}
 			input = append(input, wsInput{Type: "function_call_output", CallID: tc.CallID, Output: resultJSON})
 		}
@@ -224,7 +224,7 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 			return err
 		}
 
-		if result.Content != "" {
+		if result.Content != "" && sink.OnDelta != nil {
 			sink.OnDelta(result.Content)
 		}
 
@@ -233,18 +233,15 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 		}
 
 		for _, tc := range result.ToolCalls {
+			var args map[string]any
+			_ = json.Unmarshal([]byte(tc.Arguments), &args)
+			call := StreamToolCall{ID: tc.ID, CallID: tc.ID, Name: tc.Name, Arguments: args}
 			if sink.OnToolCall != nil {
-				var args map[string]any
-				json.Unmarshal([]byte(tc.Arguments), &args)
-				sink.OnToolCall(StreamToolCall{ID: tc.ID, CallID: tc.ID, Name: tc.Name, Arguments: args})
+				sink.OnToolCall(call)
 			}
-
-			output := executeToolByName(ctx, reg, tc)
-			var out any
-			json.Unmarshal([]byte(output), &out)
-
+			res, output := executeStreamTool(ctx, reg, call, tc.Arguments, sink)
 			if sink.OnToolResult != nil {
-				sink.OnToolResult(ToolResult{ToolCallID: tc.ID, CallID: tc.ID, Output: out})
+				sink.OnToolResult(res)
 			}
 
 			messages = append(messages, Message{
@@ -258,4 +255,32 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 			})
 		}
 	}
+}
+
+func executeStreamTool(ctx context.Context, reg *tools.Registry, call StreamToolCall, rawArgs string, sink StreamSink) (ToolResult, string) {
+	if sink.ExecuteTool != nil {
+		res, err := sink.ExecuteTool(ctx, call)
+		if err != nil {
+			payload := map[string]any{"error": err.Error()}
+			resultJSON, _ := json.Marshal(payload)
+			return ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: payload}, string(resultJSON)
+		}
+		if res.ToolCallID == "" {
+			res.ToolCallID = call.ID
+		}
+		if res.CallID == "" {
+			res.CallID = call.CallID
+		}
+		resultJSON, err := json.Marshal(res.Output)
+		if err != nil {
+			payload := map[string]any{"error": err.Error()}
+			fallback, _ := json.Marshal(payload)
+			return ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: payload}, string(fallback)
+		}
+		return res, string(resultJSON)
+	}
+	resultJSON := executeToolByName(ctx, reg, ToolCall{ID: call.CallID, Name: call.Name, Arguments: rawArgs})
+	var out any
+	_ = json.Unmarshal([]byte(resultJSON), &out)
+	return ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: out}, resultJSON
 }

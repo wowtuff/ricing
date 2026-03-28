@@ -17,6 +17,17 @@ type updateModeRequest struct {
 	Mode string `json:"mode"`
 }
 
+type createMessageRequest struct {
+	Prompt string `json:"prompt"`
+	Mode   string `json:"mode"`
+	LLM    struct {
+		ProviderID string `json:"provider_id"`
+		Model      string `json:"model"`
+		APIKey     string `json:"api_key"`
+		URL        string `json:"url"`
+	} `json:"llm"`
+}
+
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -124,7 +135,38 @@ func (s *Server) handleSessionActions(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"attachment": attachment})
 	case "messages":
-		writeError(w, http.StatusNotImplemented, "not_ready", "session messages are not wired yet")
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		var req createMessageRequest
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		if req.Prompt == "" {
+			writeError(w, http.StatusBadRequest, "missing_prompt", "prompt is required")
+			return
+		}
+		run, err := s.runs.Create(r.Context(), service.CreateRun{
+			SessionID:  sessionID,
+			Prompt:     req.Prompt,
+			Mode:       req.Mode,
+			ProviderID: req.LLM.ProviderID,
+			Model:      req.LLM.Model,
+			APIKey:     req.LLM.APIKey,
+			URL:        req.LLM.URL,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "message_create_failed", err.Error())
+			return
+		}
+		snapshot, _ := s.sessions.Get(sessionID)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"run":     run,
+			"session": snapshot.Session,
+			"ws_url":  "/api/v1/ws",
+		})
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	}

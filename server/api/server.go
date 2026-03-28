@@ -21,7 +21,7 @@ type Server struct {
 func NewServer(addr string, reg *tools.Registry, uiDir string) *Server {
 	providers := service.NewProviderService()
 	sessions := service.NewSessionService("")
-	runs := service.NewRunService(reg, providers)
+	runs := service.NewRunService(reg, providers, sessions)
 
 	s := &Server{
 		addr:      addr,

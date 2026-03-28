@@ -8,9 +8,10 @@ import (
 )
 
 type createRunRequest struct {
-	Prompt string `json:"prompt"`
-	Mode   string `json:"mode"`
-	LLM    struct {
+	SessionID string `json:"session_id"`
+	Prompt    string `json:"prompt"`
+	Mode      string `json:"mode"`
+	LLM       struct {
 		ProviderID string `json:"provider_id"`
 		Model      string `json:"model"`
 		APIKey     string `json:"api_key"`
@@ -48,6 +49,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run, err := s.runs.Create(r.Context(), service.CreateRun{
+		SessionID:  req.SessionID,
 		Prompt:     req.Prompt,
 		Mode:       mode,
 		ProviderID: providerID,

@@ -16,6 +16,7 @@ func NewDefaultRegistry() *tools.Registry {
 	reg.Register(&SystemInfoTool{})
 	reg.Register(&ServiceLogsTool{})
 	reg.Register(&ColorModeTool{})
+	reg.Register(UpdatePlanTool{})
 
 	return reg
 }
