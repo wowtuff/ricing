@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/wowtuff/ricing/service"
@@ -15,6 +16,14 @@ type createSessionRequest struct {
 
 type updateModeRequest struct {
 	Mode string `json:"mode"`
+}
+
+type updateEntryRequest struct {
+	Content string `json:"content"`
+}
+
+type answerQuestionRequest struct {
+	OptionID string `json:"option_id"`
 }
 
 type createMessageRequest struct {
@@ -67,17 +76,44 @@ func (s *Server) handleSessionActions(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "":
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			snapshot, ok := s.sessions.Get(sessionID)
+			if !ok {
+				writeError(w, http.StatusNotFound, "session_not_found", "session not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, snapshot)
+		case http.MethodDelete:
+			session, err := s.sessions.Delete(sessionID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "session_delete_failed", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"session": session, "deleted": true})
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-			return
 		}
-		snapshot, ok := s.sessions.Get(sessionID)
-		if !ok {
-			writeError(w, http.StatusNotFound, "session_not_found", "session not found")
-			return
-		}
-		writeJSON(w, http.StatusOK, snapshot)
 	case "entries":
+		if len(parts) > 2 {
+			entryID := parts[2]
+			if r.Method != http.MethodPut {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+				return
+			}
+			var req updateEntryRequest
+			if err := readJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+				return
+			}
+			entry, err := s.sessions.UpdateUserEntry(sessionID, entryID, req.Content)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "entry_update_failed", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"entry": entry})
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
@@ -104,7 +140,78 @@ func (s *Server) handleSessionActions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"session": session})
+	case "questions":
+		if len(parts) < 3 {
+			writeError(w, http.StatusNotFound, "not_found", "not found")
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		var req answerQuestionRequest
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		entry, answer, err := s.sessions.AnswerQuestion(sessionID, parts[2], req.OptionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "question_answer_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"entry": entry, "answer": answer})
 	case "attachments":
+		if len(parts) > 2 {
+			attachmentID := parts[2]
+			attachmentAction := ""
+			if len(parts) > 3 {
+				attachmentAction = parts[3]
+			}
+			switch attachmentAction {
+			case "":
+				switch r.Method {
+				case http.MethodGet:
+					attachment, ok := s.sessions.GetAttachment(sessionID, attachmentID)
+					if !ok {
+						writeError(w, http.StatusNotFound, "attachment_not_found", "attachment not found")
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"attachment": attachment})
+					return
+				case http.MethodDelete:
+					attachment, err := s.sessions.RemoveAttachment(sessionID, attachmentID)
+					if err != nil {
+						writeError(w, http.StatusBadRequest, "attachment_remove_failed", err.Error())
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"attachment": attachment, "deleted": true})
+					return
+				default:
+					writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+					return
+				}
+			case "content":
+				if r.Method != http.MethodGet {
+					writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+					return
+				}
+				attachment, ok := s.sessions.GetAttachment(sessionID, attachmentID)
+				if !ok {
+					writeError(w, http.StatusNotFound, "attachment_not_found", "attachment not found")
+					return
+				}
+				disposition := "inline"
+				if r.URL.Query().Get("download") == "1" {
+					disposition = "attachment"
+				}
+				w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, attachment.Name))
+				http.ServeFile(w, r, attachment.Path)
+				return
+			default:
+				writeError(w, http.StatusNotFound, "not_found", "not found")
+				return
+			}
+		}
 		if r.Method == http.MethodGet {
 			snapshot, ok := s.sessions.Get(sessionID)
 			if !ok {

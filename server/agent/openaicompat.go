@@ -125,6 +125,29 @@ func toOpenAIMessages(messages []Message) []map[string]any {
 				"tool_call_id": m.ToolCallID,
 			})
 		default:
+			if len(m.Images) > 0 {
+				content := make([]map[string]any, 0, len(m.Images)+1)
+				if m.Content != "" {
+					content = append(content, map[string]any{
+						"type": "text",
+						"text": m.Content,
+					})
+				}
+				for _, image := range m.Images {
+					content = append(content, map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url":    image.URL,
+							"detail": image.Detail,
+						},
+					})
+				}
+				out = append(out, map[string]any{
+					"role":    m.Role,
+					"content": content,
+				})
+				continue
+			}
 			out = append(out, map[string]any{
 				"role":    m.Role,
 				"content": m.Content,

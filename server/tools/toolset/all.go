@@ -17,6 +17,7 @@ func NewDefaultRegistry() *tools.Registry {
 	reg.Register(&ServiceLogsTool{})
 	reg.Register(&ColorModeTool{})
 	reg.Register(UpdatePlanTool{})
+	reg.Register(RequestUserInputTool{})
 
 	return reg
 }

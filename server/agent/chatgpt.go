@@ -83,8 +83,10 @@ type wsInput struct {
 
 //typed text block inside a message
 type wsContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 //any event pushed from the server over the websocket
@@ -161,7 +163,7 @@ func (b *chatGPTBackend) Complete(ctx context.Context, messages []Message, specs
 	req := wsRequest{
 		Type:              "response.create",
 		Model:             "gpt-5.2-codex",
-		Instructions:      "You are a smart agent, you provide solutions to user prompts, with no outside knowledge but from the toolset provided to you",
+		Instructions:      defaultInstructions(messageSetHasImages(messages)),
 		Input:             input,
 		Tools:             toolSpecs,
 		ToolChoice:        "auto",
@@ -221,12 +223,21 @@ func messagesToWSInput(messages []Message) []wsInput {
 	for _, m := range messages {
 		switch m.Role {
 		case "user":
+			content := []wsContent{}
+			if m.Content != "" {
+				content = append(content, wsContent{Type: "input_text", Text: m.Content})
+			}
+			for _, image := range m.Images {
+				content = append(content, wsContent{
+					Type:     "input_image",
+					ImageURL: image.URL,
+					Detail:   image.Detail,
+				})
+			}
 			input = append(input, wsInput{
-				Type: "message",
-				Role: "user",
-				Content: []wsContent{
-					{Type: "input_text", Text: m.Content},
-				},
+				Type:    "message",
+				Role:    "user",
+				Content: content,
 			})
 		case "tool":
 			input = append(input, wsInput{

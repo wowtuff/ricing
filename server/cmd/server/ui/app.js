@@ -8,6 +8,9 @@ const providerDefaults = {
   lmstudio: { label: "lm studio", model: "", url: "http://localhost:1234/v1", local: true }
 };
 
+const defaultBackendOrigin = "http://127.0.0.1:1777";
+const pageOrigin = window.location.origin && window.location.origin !== "null" ? window.location.origin : "";
+
 const state = {
   sessions: [],
   activeSessionId: "",
@@ -19,8 +22,10 @@ const state = {
   oauthProviderId: "",
   oauthConnected: false,
   backendOnline: false,
+  backendOrigin: pageOrigin || defaultBackendOrigin,
   config: loadStoredConfig(),
-  localEntries: []
+  localEntries: [],
+  editingEntryId: ""
 };
 
 const backendStatus = document.getElementById("backendStatus");
@@ -32,6 +37,7 @@ const sessionList = document.getElementById("sessionList");
 const sessionTitle = document.getElementById("sessionTitle");
 const sessionModeLabel = document.getElementById("sessionModeLabel");
 const sessionState = document.getElementById("sessionState");
+const deleteSessionButton = document.getElementById("deleteSessionButton");
 const modeSelect = document.getElementById("modeSelect");
 const connectPanel = document.getElementById("connectPanel");
 const connectButton = document.getElementById("connectButton");
@@ -40,17 +46,21 @@ const transcript = document.getElementById("transcript");
 const composer = document.getElementById("composer");
 const promptInput = document.getElementById("promptInput");
 const sendButton = document.getElementById("sendButton");
+const cancelEditButton = document.getElementById("cancelEditButton");
 const stopButton = document.getElementById("stopButton");
 const composerStatus = document.getElementById("composerStatus");
 const connectionSummary = document.getElementById("connectionSummary");
 const attachButton = document.getElementById("attachButton");
 const fileInput = document.getElementById("fileInput");
 const attachmentSummary = document.getElementById("attachmentSummary");
-const runStatus = document.getElementById("runStatus");
-const nowCard = document.getElementById("nowCard");
+const composerAttachments = document.getElementById("composerAttachments");
 const approvalList = document.getElementById("approvalList");
-const attachmentList = document.getElementById("attachmentList");
 const activityList = document.getElementById("activityList");
+const attachmentPreviewDialog = document.getElementById("attachmentPreviewDialog");
+const attachmentPreviewImage = document.getElementById("attachmentPreviewImage");
+const attachmentPreviewName = document.getElementById("attachmentPreviewName");
+const attachmentPreviewClose = document.getElementById("attachmentPreviewClose");
+const attachmentPreviewDownload = document.getElementById("attachmentPreviewDownload");
 const providerDialog = document.getElementById("providerDialog");
 const providerClose = document.getElementById("providerClose");
 const providerSelect = document.getElementById("providerSelect");
@@ -157,12 +167,42 @@ function activeProviderPayload() {
   };
 }
 
+function backendOrigin() {
+  return state.backendOrigin || defaultBackendOrigin;
+}
+
+function apiURL(path) {
+  return new URL(path, backendOrigin()).toString();
+}
+
+async function detectBackendOrigin() {
+  const candidates = [];
+  if (pageOrigin) {
+    candidates.push(pageOrigin);
+  }
+  if (!candidates.includes(defaultBackendOrigin)) {
+    candidates.push(defaultBackendOrigin);
+  }
+
+  for (const origin of candidates) {
+    try {
+      const res = await fetch(new URL("/api/v1/health", origin).toString());
+      if (res.ok) {
+        state.backendOrigin = origin;
+        return;
+      }
+    } catch {
+      // Try the next likely backend origin.
+    }
+  }
+}
+
 function api(path, options = {}) {
-  return fetch(path, options);
+  return fetch(apiURL(path), options);
 }
 
 function wsURL() {
-  return `${window.location.origin.replace(/^http/, "ws")}/api/v1/ws`;
+  return `${backendOrigin().replace(/^http/, "ws")}/api/v1/ws`;
 }
 
 async function refreshProviders() {
@@ -372,16 +412,27 @@ async function createSession() {
   const data = await res.json();
   if (!res.ok) {
     composerStatus.textContent = data.error?.message || "could not create session";
-    return;
+    return null;
   }
   upsertSession(data.session);
   await selectSession(data.session.id);
+  return data.session;
 }
 
 async function selectSession(sessionId) {
+  if (
+    sessionId &&
+    state.activeSessionId === sessionId &&
+    state.activeSnapshot?.session?.id === sessionId &&
+    state.sessionSocket &&
+    [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.sessionSocket.readyState)
+  ) {
+    return;
+  }
   state.activeSessionId = sessionId;
   state.activeRunId = "";
   state.localEntries = [];
+  state.editingEntryId = "";
   const res = await api(`/api/v1/sessions/${sessionId}`);
   const data = await res.json();
   state.activeSnapshot = data;
@@ -412,6 +463,11 @@ function openCatalogSocket() {
     if (message.type === "session.updated") {
       upsertSession(message.data?.session);
       renderSessions();
+      return;
+    }
+    if (message.type === "session.deleted") {
+      removeSessionLocal(message.data?.session_id);
+      renderAll();
     }
   };
   state.catalogSocket = socket;
@@ -471,7 +527,7 @@ function handleSessionMessage(message) {
       appendEntryDelta(message.data?.entry_id, message.data?.text || "");
     }
     renderTranscript();
-    renderNowCard();
+    renderComposerState();
     return;
   }
   if (message.type === "approval.updated") {
@@ -494,6 +550,16 @@ function handleSessionMessage(message) {
   if (message.type === "session.updated" && message.data?.attachment) {
     upsertAttachment(message.data.attachment);
     renderAttachments();
+    return;
+  }
+  if (message.type === "session.updated" && message.data?.attachment_removed_id) {
+    removeAttachmentLocal(message.data.attachment_removed_id);
+    renderAttachments();
+    return;
+  }
+  if (message.type === "session.deleted") {
+    removeSessionLocal(message.data?.session_id);
+    renderAll();
   }
 }
 
@@ -508,6 +574,25 @@ function upsertSession(session) {
     state.sessions[index] = { ...state.sessions[index], ...session };
   }
   state.sessions.sort((left, right) => `${right.updated_at || ""}`.localeCompare(`${left.updated_at || ""}`));
+}
+
+function removeSessionLocal(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+  state.sessions = state.sessions.filter((session) => session.id !== sessionId);
+  if (state.activeSessionId !== sessionId) {
+    return;
+  }
+  if (state.sessionSocket) {
+    state.sessionSocket.close();
+    state.sessionSocket = null;
+  }
+  state.activeSessionId = "";
+  state.activeSnapshot = null;
+  state.activeRunId = "";
+  state.localEntries = [];
+  state.editingEntryId = "";
 }
 
 function removeMatchedLocalEntry(entry) {
@@ -578,6 +663,199 @@ function upsertAttachment(attachment) {
     attachments[index] = { ...attachments[index], ...attachment };
   }
   state.activeSnapshot.attachments = attachments;
+  if (state.activeSnapshot.session) {
+    state.activeSnapshot.session.attachment_count = attachments.length;
+  }
+}
+
+function removeAttachmentLocal(attachmentId) {
+  if (!state.activeSnapshot || !attachmentId) {
+    return;
+  }
+  const attachments = state.activeSnapshot.attachments || [];
+  const next = attachments.filter((item) => item.id !== attachmentId);
+  state.activeSnapshot.attachments = next;
+  if (state.activeSnapshot.session) {
+    state.activeSnapshot.session.attachment_count = next.length;
+  }
+  const previewSrc = attachmentPreviewImage?.dataset.attachmentId || "";
+  if (previewSrc === attachmentId) {
+    closeAttachmentPreview();
+  }
+}
+
+function isImageAttachment(attachment) {
+  return /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(attachment?.name || "");
+}
+
+function attachmentTypeLabel(attachment) {
+  return (attachment?.name?.split(".").pop() || "file").toUpperCase();
+}
+
+function attachmentContentURL(attachment, download = false) {
+  const url = new URL(apiURL(`/api/v1/sessions/${attachment.session_id}/attachments/${attachment.id}/content`));
+  if (download) {
+    url.searchParams.set("download", "1");
+  }
+  return url.toString();
+}
+
+function openAttachmentPreview(attachmentId) {
+  const attachment = (state.activeSnapshot?.attachments || []).find((item) => item.id === attachmentId);
+  if (!attachment || !isImageAttachment(attachment) || !attachmentPreviewDialog) {
+    return;
+  }
+  attachmentPreviewName.textContent = attachment.name;
+  attachmentPreviewImage.src = attachmentContentURL(attachment);
+  attachmentPreviewImage.alt = attachment.name;
+  attachmentPreviewImage.dataset.attachmentId = attachment.id;
+  attachmentPreviewDownload.href = attachmentContentURL(attachment, true);
+  attachmentPreviewDownload.download = attachment.name;
+  attachmentPreviewDialog.classList.remove("is-hidden");
+}
+
+function closeAttachmentPreview() {
+  if (!attachmentPreviewDialog) {
+    return;
+  }
+  attachmentPreviewDialog.classList.add("is-hidden");
+  attachmentPreviewImage.removeAttribute("src");
+  attachmentPreviewImage.removeAttribute("alt");
+  delete attachmentPreviewImage.dataset.attachmentId;
+  attachmentPreviewDownload.removeAttribute("href");
+}
+
+async function deleteAttachment(attachmentId) {
+  const attachment = (state.activeSnapshot?.attachments || []).find((item) => item.id === attachmentId);
+  if (!attachment) {
+    return;
+  }
+  composerStatus.textContent = `removing ${attachment.name}...`;
+  try {
+    const res = await api(`/api/v1/sessions/${attachment.session_id}/attachments/${attachment.id}`, {
+      method: "DELETE"
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || `could not remove ${attachment.name}`);
+    }
+    removeAttachmentLocal(attachment.id);
+    renderAttachments();
+    composerStatus.textContent = "attachment removed";
+  } catch (error) {
+    composerStatus.textContent = error.message || `could not remove ${attachment.name}`;
+  }
+}
+
+function currentEditingEntry() {
+  if (!state.editingEntryId) {
+    return null;
+  }
+  return (state.activeSnapshot?.entries || []).find((entry) => entry.id === state.editingEntryId) || null;
+}
+
+function beginEditMessage(entryId) {
+  const entry = (state.activeSnapshot?.entries || []).find((item) => item.id === entryId && item.kind === "user_message");
+  if (!entry) {
+    return;
+  }
+  state.editingEntryId = entry.id;
+  promptInput.value = entry.content || "";
+  promptInput.focus();
+  promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+  renderAll();
+}
+
+function cancelEditMessage() {
+  state.editingEntryId = "";
+  promptInput.value = "";
+  renderAll();
+}
+
+async function answerQuestion(questionId, optionId) {
+  if (!state.activeSessionId || !questionId || !optionId) {
+    return;
+  }
+  composerStatus.textContent = "sending answer";
+  try {
+    const res = await api(`/api/v1/sessions/${state.activeSessionId}/questions/${questionId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ option_id: optionId })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || "could not answer question");
+    }
+    if (data.entry) {
+      upsertEntry(data.entry);
+    }
+    composerStatus.textContent = "answer recorded";
+    renderAll();
+  } catch (error) {
+    composerStatus.textContent = error.message || "could not answer question";
+  }
+}
+
+async function deleteSession(sessionId = state.activeSessionId) {
+  if (!sessionId) {
+    return;
+  }
+  const session = state.sessions.find((item) => item.id === sessionId) || state.activeSnapshot?.session;
+  if (!window.confirm(`Delete "${session?.title || "this session"}"?`)) {
+    return;
+  }
+  composerStatus.textContent = "deleting session";
+  try {
+    const res = await api(`/api/v1/sessions/${sessionId}`, {
+      method: "DELETE"
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || "could not delete session");
+    }
+    removeSessionLocal(sessionId);
+    renderAll();
+    if (!state.activeSessionId && state.sessions.length > 0) {
+      await selectSession(state.sessions[0].id);
+    }
+    composerStatus.textContent = "session deleted";
+  } catch (error) {
+    composerStatus.textContent = error.message || "could not delete session";
+  }
+}
+
+function fileExtensionForType(type) {
+  switch ((type || "").toLowerCase()) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/bmp":
+      return "bmp";
+    case "image/svg+xml":
+      return "svg";
+    default:
+      return "png";
+  }
+}
+
+function clipboardImageFiles(event) {
+  const items = Array.from(event.clipboardData?.items || []).filter((item) => item.type?.startsWith("image/"));
+  return items.map((item, index) => {
+    const file = item.getAsFile();
+    if (!file) {
+      return null;
+    }
+    if (file.name) {
+      return file;
+    }
+    return new File([file], `clipboard-${Date.now()}-${index + 1}.${fileExtensionForType(file.type)}`, {
+      type: file.type || "image/png"
+    });
+  }).filter(Boolean);
 }
 
 function addLocalEntry(entry) {
@@ -592,6 +870,27 @@ function updateLocalEntry(entryId, patch) {
   Object.assign(entry, patch, { updated_at: new Date().toISOString() });
 }
 
+function applySessionStatusBadge(element, status) {
+  const value = `${status || ""}`.trim();
+  element.className = "status-badge subtle";
+  if (!value || value === "idle") {
+    element.textContent = "";
+    element.classList.add("is-hidden");
+    return;
+  }
+  element.classList.remove("is-hidden");
+  element.textContent = value;
+  if (value === "running" || value === "queued") {
+    element.classList.add("running");
+  } else if (value === "failed") {
+    element.classList.add("failed");
+  } else if (value === "cancelled") {
+    element.classList.add("warn");
+  } else {
+    element.classList.add("connected");
+  }
+}
+
 function renderSessions() {
   const search = state.search.trim().toLowerCase();
   const filtered = state.sessions.filter((session) => {
@@ -603,17 +902,23 @@ function renderSessions() {
   });
   sessionList.innerHTML = filtered.map((session) => {
     const active = session.id === state.activeSessionId ? " active" : "";
-    const tags = [
-      `<span class="tag">${escapeHTML(session.mode || "auto")}</span>`,
-      `<span class="tag">${escapeHTML(session.status || "idle")}</span>`
-    ];
+    const tags = [`<span class="tag">${escapeHTML(session.mode || "auto")}</span>`];
+    if (session.status && session.status !== "idle") {
+      tags.push(`<span class="tag">${escapeHTML(session.status)}</span>`);
+    }
     if (session.pending_approvals) {
       tags.push(`<span class="tag">${session.pending_approvals} approvals</span>`);
     }
-    return `<button class="session-item${active}" data-session-id="${escapeHTML(session.id)}"><div class="session-item-head"><span class="session-item-title">${escapeHTML(session.title || "new session")}</span><span class="entry-meta">${escapeHTML(formatRelative(session.updated_at))}</span></div><p class="session-item-preview">${escapeHTML(session.latest_preview || "no activity yet")}</p><div class="session-item-tags">${tags.join("")}</div></button>`;
+    return `<div class="session-item-shell${active}"><button class="session-item${active}" data-session-id="${escapeHTML(session.id)}"><div class="session-item-head"><span class="session-item-title">${escapeHTML(session.title || "new session")}</span><span class="entry-meta">${escapeHTML(formatRelative(session.updated_at))}</span></div><p class="session-item-preview">${escapeHTML(session.latest_preview || "no activity yet")}</p><div class="session-item-tags">${tags.join("")}</div></button><button class="session-delete-button" data-delete-session="${escapeHTML(session.id)}" aria-label="delete ${escapeHTML(session.title || "session")}">delete</button></div>`;
   }).join("");
   sessionList.querySelectorAll("[data-session-id]").forEach((button) => {
     button.addEventListener("click", () => selectSession(button.dataset.sessionId));
+  });
+  sessionList.querySelectorAll("[data-delete-session]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteSession(button.dataset.deleteSession);
+    });
   });
 }
 
@@ -631,35 +936,19 @@ function renderBanner() {
   if (!session) {
     sessionTitle.textContent = "select a session";
     sessionModeLabel.textContent = modeSelect.value || "auto";
-    sessionState.textContent = "idle";
-    sessionState.className = "status-badge subtle";
-    runStatus.textContent = "idle";
-    runStatus.className = "status-badge subtle";
+    applySessionStatusBadge(sessionState, "");
+    deleteSessionButton.classList.add("is-hidden");
     return;
   }
   sessionTitle.textContent = session.title || "new session";
   sessionModeLabel.textContent = session.mode || "auto";
-  sessionState.textContent = session.status || "idle";
-  sessionState.className = "status-badge subtle";
-  runStatus.textContent = session.status || "idle";
-  runStatus.className = "status-badge subtle";
-  if (session.status === "running" || session.status === "queued") {
-    sessionState.classList.add("running");
-    runStatus.classList.add("running");
-  } else if (session.status === "failed") {
-    sessionState.classList.add("failed");
-    runStatus.classList.add("failed");
-  } else if (session.status === "cancelled") {
-    sessionState.classList.add("warn");
-    runStatus.classList.add("warn");
-  } else {
-    sessionState.classList.add("connected");
-    runStatus.classList.add("connected");
-  }
+  applySessionStatusBadge(sessionState, session.status);
+  deleteSessionButton.classList.remove("is-hidden");
+  deleteSessionButton.disabled = ["running", "queued"].includes(session.status || "");
 }
 
 function transcriptEntries() {
-  const sessionEntries = (state.activeSnapshot?.entries || []).filter((entry) => ["user_message", "assistant_message", "plan", "approval", "system"].includes(entry.kind));
+  const sessionEntries = (state.activeSnapshot?.entries || []).filter((entry) => ["user_message", "assistant_message", "plan", "approval", "question", "system"].includes(entry.kind));
   return sessionEntries.concat(state.localEntries).sort((left, right) => {
     if (typeof left.seq === "number" && typeof right.seq === "number") {
       return left.seq - right.seq;
@@ -680,6 +969,12 @@ function renderTranscript() {
   transcript.querySelectorAll("[data-approval-action]").forEach((button) => {
     button.addEventListener("click", () => resolveApproval(button.dataset.approvalId, button.dataset.approvalAction));
   });
+  transcript.querySelectorAll("[data-question-option]").forEach((button) => {
+    button.addEventListener("click", () => answerQuestion(button.dataset.questionId, button.dataset.questionOption));
+  });
+  transcript.querySelectorAll("[data-edit-entry]").forEach((button) => {
+    button.addEventListener("click", () => beginEditMessage(button.dataset.editEntry));
+  });
   transcript.scrollTop = transcript.scrollHeight;
 }
 
@@ -691,6 +986,8 @@ function entryLabel(entry) {
       return entry.status === "streaming" ? "assistant streaming" : "assistant";
     case "plan":
       return "plan";
+    case "question":
+      return entry.title || "question";
     case "approval":
       return `approval ${entry.status || ""}`.trim();
     case "system":
@@ -701,22 +998,66 @@ function entryLabel(entry) {
 }
 
 function entryMeta(entry) {
-  if (["sending", "queued", "failed"].includes(entry.status || "")) {
+  if (["sending", "queued", "failed", "answered"].includes(entry.status || "")) {
     return entry.status;
   }
+  if (entry.kind === "question" && entry.status === "pending") {
+    return "waiting";
+  }
   return formatRelative(entry.updated_at || entry.created_at);
+}
+
+function questionAnswer(entry) {
+  const answer = entry.meta?.answer;
+  if (!answer) {
+    return null;
+  }
+  return {
+    option_id: `${answer.option_id || ""}`.trim(),
+    label: `${answer.label || answer.answer || ""}`.trim(),
+    description: `${answer.description || ""}`.trim(),
+    answer: `${answer.answer || answer.label || ""}`.trim()
+  };
+}
+
+function renderQuestionEntry(entry) {
+  const questionId = `${entry.meta?.question_id || ""}`.trim();
+  const options = Array.isArray(entry.meta?.options) ? entry.meta.options : [];
+  const answer = questionAnswer(entry);
+  const buttons = options.map((option) => {
+    const optionId = `${option.id || ""}`.trim();
+    const selected = answer?.option_id === optionId;
+    const selectedClass = selected ? " selected" : "";
+    const disabled = entry.status !== "pending" ? " disabled" : "";
+    const description = option.description ? `<div class="question-option-description">${escapeHTML(option.description)}</div>` : "";
+    return `<button class="question-option${selectedClass}" data-question-id="${escapeHTML(questionId)}" data-question-option="${escapeHTML(optionId)}"${disabled}><div class="question-option-label">${escapeHTML(option.label || optionId)}</div>${description}</button>`;
+  }).join("");
+  const answerSummary = answer ? `<div class="question-answer-summary">selected: ${escapeHTML(answer.answer || answer.label)}</div>` : "";
+  return `<div class="entry-content">${escapeHTML(entry.content || "")}</div><div class="question-options">${buttons}</div>${answerSummary}`;
 }
 
 function renderEntryCard(entry) {
   const status = entry.status ? ` ${escapeHTML(entry.status)}` : "";
   let actions = "";
+  let body = `<div class="entry-content">${escapeHTML(entry.content || "")}</div>`;
   if (entry.kind === "approval" && entry.status === "pending") {
     const approvalId = entry.meta?.approval_id;
     if (approvalId) {
       actions = `<div class="approval-actions"><button class="ghost-button" data-approval-action="reject" data-approval-id="${escapeHTML(approvalId)}">reject</button><button class="primary-button" data-approval-action="approve" data-approval-id="${escapeHTML(approvalId)}">approve</button></div>`;
     }
   }
-  return `<article class="entry-card ${escapeHTML(entry.kind)}${status}"><div class="entry-head"><span class="entry-title">${escapeHTML(entryLabel(entry))}</span><span class="entry-meta">${escapeHTML(entryMeta(entry))}</span></div><div class="entry-content">${escapeHTML(entry.content || "")}</div>${actions}</article>`;
+  if (entry.kind === "question") {
+    body = renderQuestionEntry(entry);
+  }
+  if (
+    entry.kind === "user_message" &&
+    !`${entry.id || ""}`.startsWith("local_") &&
+    !["sending", "queued"].includes(entry.status || "") &&
+    !["running", "queued"].includes(state.activeSnapshot?.session?.status || "")
+  ) {
+    actions = `${actions}<div class="entry-card-actions"><button class="entry-inline-action" data-edit-entry="${escapeHTML(entry.id)}">edit</button></div>`;
+  }
+  return `<article class="entry-card ${escapeHTML(entry.kind)}${status}"><div class="entry-head"><span class="entry-title">${escapeHTML(entryLabel(entry))}</span><div class="entry-head-meta"><span class="entry-meta">${escapeHTML(entryMeta(entry))}</span></div></div>${body}${actions}</article>`;
 }
 
 function renderApprovals() {
@@ -732,9 +1073,25 @@ function renderApprovals() {
 function renderAttachments() {
   const attachments = state.activeSnapshot?.attachments || [];
   attachmentSummary.textContent = attachments.length === 0 ? "no files attached" : `${attachments.length} file${attachments.length === 1 ? "" : "s"} attached`;
-  attachmentList.innerHTML = attachments.length === 0 ? `<div class="info-card">drop files into the current session to give the agent more context</div>` : attachments.map((attachment) => {
-    return `<div class="attachment-item"><div class="attachment-item-title">${escapeHTML(attachment.name)}</div><div class="attachment-item-meta">${escapeHTML(formatFileSize(attachment.size))}</div></div>`;
+  if (!composerAttachments) {
+    return;
+  }
+  composerAttachments.classList.toggle("is-hidden", attachments.length === 0);
+  composerAttachments.innerHTML = attachments.map((attachment) => {
+    const primary = isImageAttachment(attachment)
+      ? `<button class="composer-attachment-open" data-attachment-preview="${escapeHTML(attachment.id)}" aria-label="preview ${escapeHTML(attachment.name)}"><img class="composer-attachment-thumb" src="${escapeHTML(attachmentContentURL(attachment))}" alt="${escapeHTML(attachment.name)}"></button>`
+      : `<a class="composer-attachment-open" href="${escapeHTML(attachmentContentURL(attachment))}" target="_blank" rel="noreferrer" aria-label="open ${escapeHTML(attachment.name)}"><span class="composer-attachment-fallback">${escapeHTML(attachmentTypeLabel(attachment))}</span></a>`;
+    const title = isImageAttachment(attachment)
+      ? `<button class="composer-attachment-name composer-chip-button" data-attachment-preview="${escapeHTML(attachment.id)}">${escapeHTML(attachment.name)}</button>`
+      : `<a class="composer-attachment-name composer-chip-button" href="${escapeHTML(attachmentContentURL(attachment))}" target="_blank" rel="noreferrer">${escapeHTML(attachment.name)}</a>`;
+    return `<div class="composer-attachment">${primary}<div class="composer-attachment-body">${title}<div class="composer-attachment-meta">${escapeHTML(formatFileSize(attachment.size))}</div></div><div class="composer-attachment-actions"><button class="composer-chip-button danger" data-attachment-remove="${escapeHTML(attachment.id)}" aria-label="remove ${escapeHTML(attachment.name)}">x</button></div></div>`;
   }).join("");
+  composerAttachments.querySelectorAll("[data-attachment-preview]").forEach((button) => {
+    button.addEventListener("click", () => openAttachmentPreview(button.dataset.attachmentPreview));
+  });
+  composerAttachments.querySelectorAll("[data-attachment-remove]").forEach((button) => {
+    button.addEventListener("click", () => deleteAttachment(button.dataset.attachmentRemove));
+  });
 }
 
 function renderActivity() {
@@ -744,33 +1101,39 @@ function renderActivity() {
   }).join("");
 }
 
-function renderNowCard() {
+function renderComposerState() {
   const session = state.activeSnapshot?.session;
-  const entries = transcriptEntries().concat((state.activeSnapshot?.entries || []).filter((entry) => ["tool_call", "tool_result", "change", "verification"].includes(entry.kind)));
-  const lastEntry = [...entries].reverse().find((entry) => ["assistant_message", "tool_call", "change", "verification", "plan", "system", "user_message"].includes(entry.kind));
   const pendingLocal = [...state.localEntries].reverse().find((entry) => entry.kind === "user_message" && ["sending", "queued"].includes(entry.status || ""));
+  const editing = currentEditingEntry();
+  const pendingQuestion = (state.activeSnapshot?.entries || []).find((entry) => entry.kind === "question" && entry.status === "pending");
   stopButton.classList.toggle("is-hidden", !state.activeRunId);
+  cancelEditButton.classList.toggle("is-hidden", !editing);
+  sendButton.textContent = editing ? "save" : "send";
+  promptInput.placeholder = editing ? "update your message" : "tell the agent what to change, inspect, or verify";
   if (!session) {
-    nowCard.textContent = "waiting for the next step";
     composerStatus.textContent = hasReadyProvider() ? "ready" : "choose a provider";
     return;
   }
+  if (editing) {
+    composerStatus.textContent = "editing message";
+    return;
+  }
   if (pendingLocal) {
-    nowCard.textContent = pendingLocal.content || "waiting for the backend";
     composerStatus.textContent = pendingLocal.status;
     return;
   }
+  if (pendingQuestion) {
+    composerStatus.textContent = "answer the question to continue";
+    return;
+  }
   if (session.status === "running" || session.status === "queued") {
-    nowCard.textContent = lastEntry?.content || `${session.status}...`;
     composerStatus.textContent = session.status === "queued" ? "queued" : "run in progress";
     return;
   }
   if (session.status === "failed") {
-    nowCard.textContent = lastEntry?.content || "the last run failed";
     composerStatus.textContent = "last run failed";
     return;
   }
-  nowCard.textContent = lastEntry?.content || "idle";
   if (!hasReadyProvider()) {
     composerStatus.textContent = "choose a provider";
   } else if (!sendButton.disabled) {
@@ -787,12 +1150,39 @@ function renderAll() {
   renderApprovals();
   renderAttachments();
   renderActivity();
-  renderNowCard();
+  renderComposerState();
 }
 
 async function sendPrompt() {
   const prompt = promptInput.value.trim();
   if (!prompt) {
+    return;
+  }
+  if (state.editingEntryId) {
+    try {
+      sendButton.disabled = true;
+      composerStatus.textContent = "saving edit";
+      const res = await api(`/api/v1/sessions/${state.activeSessionId}/entries/${state.editingEntryId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: prompt })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message || "could not save edit");
+      }
+      if (data.entry) {
+        upsertEntry(data.entry);
+      }
+      state.editingEntryId = "";
+      promptInput.value = "";
+      composerStatus.textContent = "message updated";
+      renderAll();
+    } catch (error) {
+      composerStatus.textContent = error.message || "could not save edit";
+    } finally {
+      sendButton.disabled = false;
+    }
     return;
   }
   if (!hasReadyProvider()) {
@@ -825,7 +1215,7 @@ async function sendPrompt() {
   sendButton.disabled = true;
   composerStatus.textContent = "sending";
   renderTranscript();
-  renderNowCard();
+  renderComposerState();
   try {
     const res = await api(`/api/v1/sessions/${state.activeSessionId}/messages`, {
       method: "POST",
@@ -915,17 +1305,39 @@ async function resolveApproval(approvalId, decision) {
 }
 
 async function uploadFiles(files) {
-  if (!state.activeSessionId || files.length === 0) {
+  if (files.length === 0) {
     return;
   }
-  for (const file of files) {
-    const form = new FormData();
-    form.append("file", file);
-    await api(`/api/v1/sessions/${state.activeSessionId}/attachments`, {
-      method: "POST",
-      body: form
-    });
+  if (!state.activeSessionId) {
+    const session = await createSession();
+    if (!session?.id) {
+      composerStatus.textContent = "could not create a session for uploads";
+      return;
+    }
   }
+  attachmentSummary.textContent = `uploading ${files.length} file${files.length === 1 ? "" : "s"}...`;
+  for (const file of files) {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await api(`/api/v1/sessions/${state.activeSessionId}/attachments`, {
+        method: "POST",
+        body: form
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message || `could not upload ${file.name}`);
+      }
+      if (data.attachment) {
+        upsertAttachment(data.attachment);
+      }
+    } catch (error) {
+      composerStatus.textContent = error.message || `could not upload ${file.name}`;
+      return;
+    }
+  }
+  renderAttachments();
+  composerStatus.textContent = "attachments ready";
 }
 
 async function stopRun() {
@@ -982,8 +1394,10 @@ providerSave.addEventListener("click", saveProviderConfig);
 providerTest.addEventListener("click", testProvider);
 providerOAuth.addEventListener("click", connectOAuth);
 newSessionButton.addEventListener("click", createSession);
+deleteSessionButton.addEventListener("click", () => deleteSession());
 modeSelect.addEventListener("change", setMode);
 sendButton.addEventListener("click", sendPrompt);
+cancelEditButton.addEventListener("click", cancelEditMessage);
 stopButton.addEventListener("click", stopRun);
 attachButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", async () => {
@@ -1000,9 +1414,23 @@ promptInput.addEventListener("keydown", (event) => {
     sendPrompt();
   }
 });
+promptInput.addEventListener("paste", async (event) => {
+  const files = clipboardImageFiles(event);
+  if (files.length === 0) {
+    return;
+  }
+  event.preventDefault();
+  await uploadFiles(files);
+});
 providerDialog.addEventListener("click", (event) => {
   if (event.target === providerDialog) {
     closeProviderDialog();
+  }
+});
+attachmentPreviewClose?.addEventListener("click", closeAttachmentPreview);
+attachmentPreviewDialog?.addEventListener("click", (event) => {
+  if (event.target === attachmentPreviewDialog) {
+    closeAttachmentPreview();
   }
 });
 
@@ -1010,6 +1438,7 @@ async function init() {
   renderProviderState();
   renderVisibility();
   renderAll();
+  await detectBackendOrigin();
   await refreshProviders();
   await loadSessions();
   openCatalogSocket();

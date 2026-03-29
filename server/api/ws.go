@@ -118,8 +118,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				if sub.Catalog {
 					hub := s.sessions.CatalogHub()
 					emit(map[string]any{"v": 1, "type": "session.snapshot", "data": map[string]any{"sessions": s.sessions.List()}})
-					for _, ev := range hub.ListAfter(sub.AfterSeq) {
-						emit(ev)
+					if sub.AfterSeq > 0 {
+						for _, ev := range hub.ListAfter(sub.AfterSeq) {
+							emit(ev)
+						}
 					}
 					_, ch, unsub := hub.Subscribe()
 					unsubscribe = unsub
@@ -146,8 +148,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					emit(map[string]any{"v": 1, "type": "session.snapshot", "data": snapshot})
-					for _, ev := range hub.ListAfter(sub.AfterSeq) {
-						emit(ev)
+					if sub.AfterSeq > 0 {
+						for _, ev := range hub.ListAfter(sub.AfterSeq) {
+							emit(ev)
+						}
 					}
 					_, ch, unsub := hub.Subscribe()
 					unsubscribe = unsub

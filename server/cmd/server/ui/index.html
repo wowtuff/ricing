@@ -14,7 +14,6 @@
     <header class="header-bar">
       <div class="header-brand">
         <h1 class="wordmark"><span>r</span>icing<span class="wordmark-cursor">_</span></h1>
-        <p class="wordmark-note">shared backend, dual clients</p>
       </div>
       <div class="header-actions">
         <div class="status-badge subtle" id="backendStatus">backend checking</div>
@@ -43,7 +42,8 @@
             <h2 id="sessionTitle">select a session</h2>
           </div>
           <div class="banner-actions">
-            <span class="status-badge subtle" id="sessionState">idle</span>
+            <span class="status-badge subtle is-hidden" id="sessionState"></span>
+            <button class="ghost-button is-hidden" id="deleteSessionButton">delete session</button>
             <select id="modeSelect">
               <option value="auto">auto</option>
               <option value="plan">plan</option>
@@ -78,10 +78,14 @@
               <button class="ghost-button is-hidden" id="stopButton">stop run</button>
             </div>
           </div>
+          <div class="composer-attachments is-hidden" id="composerAttachments"></div>
           <textarea id="promptInput" placeholder="tell the agent what to change, inspect, or verify"></textarea>
           <div class="composer-actions">
             <div class="composer-hint" id="composerStatus">ready</div>
-            <button class="primary-button" id="sendButton">send</button>
+            <div class="toolbar-group">
+              <button class="ghost-button is-hidden" id="cancelEditButton">cancel edit</button>
+              <button class="primary-button" id="sendButton">send</button>
+            </div>
           </div>
           <input id="fileInput" type="file" multiple hidden>
         </section>
@@ -89,22 +93,9 @@
       <aside class="activity-pane">
         <section class="activity-section">
           <div class="section-head">
-            <p class="section-label">run</p>
-            <span class="status-badge subtle" id="runStatus">idle</span>
-          </div>
-          <div class="info-card" id="nowCard">waiting for the next step</div>
-        </section>
-        <section class="activity-section">
-          <div class="section-head">
             <p class="section-label">pending approvals</p>
           </div>
           <div class="approval-list" id="approvalList"></div>
-        </section>
-        <section class="activity-section">
-          <div class="section-head">
-            <p class="section-label">attachments</p>
-          </div>
-          <div class="attachment-list" id="attachmentList"></div>
         </section>
         <section class="activity-section stretch">
           <div class="section-head">
@@ -155,6 +146,23 @@
         <button class="ghost-button" id="providerTest">test</button>
         <button class="ghost-button" id="providerOAuth">connect with chatgpt</button>
         <button class="primary-button" id="providerSave">save</button>
+      </div>
+    </div>
+  </div>
+  <div class="dialog is-hidden" id="attachmentPreviewDialog">
+    <div class="dialog-card preview-dialog-card">
+      <div class="dialog-head">
+        <div>
+          <p class="section-label">attachment preview</p>
+          <h3 id="attachmentPreviewName">image</h3>
+        </div>
+        <div class="dialog-actions preview-dialog-actions">
+          <a class="ghost-button" id="attachmentPreviewDownload" target="_blank" rel="noreferrer">download</a>
+          <button class="ghost-button" id="attachmentPreviewClose">close</button>
+        </div>
+      </div>
+      <div class="attachment-preview-frame">
+        <img id="attachmentPreviewImage" alt="">
       </div>
     </div>
   </div>

@@ -17,6 +17,7 @@ type RunOptions struct {
 	Backend string
 	APIKey  string
 	URL     string
+	Images  []ImageInput
 }
 
 // streamtoolcall is a tool invocation surfaced to the caller mid-stream.
@@ -96,17 +97,28 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 	}
 	toolSpecs := buildWSToolSpecs(regList)
 	var previousResponseID *string
+	content := []wsContent{}
+	if userPrompt != "" {
+		content = append(content, wsContent{Type: "input_text", Text: userPrompt})
+	}
+	for _, image := range opts.Images {
+		content = append(content, wsContent{
+			Type:     "input_image",
+			ImageURL: image.URL,
+			Detail:   image.Detail,
+		})
+	}
 	input := []wsInput{{
 		Type:    "message",
 		Role:    "user",
-		Content: []wsContent{{Type: "input_text", Text: userPrompt}},
+		Content: content,
 	}}
 
 	for {
 		req := wsRequest{
 			Type:               "response.create",
 			Model:              model,
-			Instructions:       "You are a smart agent, you provide solutions to user prompts, with no outside knowledge but from the toolset provided to you",
+			Instructions:       defaultInstructions(len(opts.Images) > 0),
 			PreviousResponseID: previousResponseID,
 			Input:              input,
 			Tools:              toolSpecs,
@@ -216,7 +228,11 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 	if reg != nil {
 		specs = reg.List()
 	}
-	messages := []Message{{Role: "user", Content: userPrompt}}
+	messages := make([]Message, 0, 2)
+	if len(opts.Images) > 0 {
+		messages = append(messages, Message{Role: "system", Content: defaultInstructions(true)})
+	}
+	messages = append(messages, Message{Role: "user", Content: userPrompt, Images: opts.Images})
 
 	for {
 		result, err := backend.Complete(ctx, messages, specs)

@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,7 +123,10 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 	}); err != nil {
 		return Run{}, err
 	}
-	ctx2, cancel := context.WithCancel(ctx)
+	// Runs should live beyond the request that created them and stop only when
+	// the user explicitly cancels them.
+	_ = ctx
+	ctx2, cancel := context.WithCancel(context.Background())
 	st := &runState{
 		run:    run,
 		hub:    NewRunHub(runID, 2048),
@@ -219,12 +224,14 @@ func (s *RunService) execute(st *runState) {
 	}
 	st.assistantEntryID = assistantEntry.ID
 	var output string
+	prompt, images := s.buildInput(st)
 	err := agent.RunStream(st.ctx, s.reg, agent.RunOptions{
 		Model:   st.run.Model,
 		Backend: st.run.Backend,
 		APIKey:  st.run.APIKey,
 		URL:     st.run.URL,
-	}, s.buildPrompt(st), agent.StreamSink{
+		Images:  images,
+	}, prompt, agent.StreamSink{
 		OnDelta: func(text string) {
 			st.appendDelta(text)
 			_, _ = s.sessions.AppendEntryContent(st.run.SessionID, st.assistantEntryID, text)
@@ -311,6 +318,9 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 				"entry_id": entry.ID,
 			},
 		}, nil
+	}
+	if call.Name == "request_user_input" {
+		return s.requestUserInput(ctx, st, call)
 	}
 	toolCallEntry, err := s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 		RunID:   st.run.ID,
@@ -440,10 +450,60 @@ func (s *RunService) runTool(ctx context.Context, call agent.StreamToolCall) (ma
 	return result, nil
 }
 
-func (s *RunService) buildPrompt(st *runState) string {
+func (s *RunService) requestUserInput(ctx context.Context, st *runState, call agent.StreamToolCall) (agent.ToolResult, error) {
+	question := strings.TrimSpace(asString(call.Arguments["question"]))
+	if question == "" {
+		return agent.ToolResult{}, fmt.Errorf("request_user_input requires a question")
+	}
+	options := questionOptionsFromMeta(call.Arguments["options"])
+	if len(options) < 2 {
+		return agent.ToolResult{}, fmt.Errorf("request_user_input requires at least two options")
+	}
+	meta := cloneMap(call.Arguments)
+	normalizedOptions := make([]any, 0, len(options))
+	for _, option := range options {
+		normalizedOptions = append(normalizedOptions, map[string]any{
+			"id":          option.ID,
+			"label":       option.Label,
+			"description": option.Description,
+		})
+	}
+	meta["options"] = normalizedOptions
+	meta["question_id"] = newID("question")
+	entry, err := s.sessions.CreateQuestion(st.run.SessionID, SessionEntry{
+		RunID:   st.run.ID,
+		Kind:    "question",
+		Status:  "pending",
+		Title:   firstNonEmptyString(asString(call.Arguments["header"]), "question"),
+		Content: question,
+		Meta:    meta,
+	})
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	answer, err := s.sessions.WaitForQuestion(ctx, questionIDFromMeta(entry.Meta))
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	return agent.ToolResult{
+		ToolCallID: call.ID,
+		CallID:     call.CallID,
+		Output: map[string]any{
+			"ok":          true,
+			"entry_id":    entry.ID,
+			"question_id": answer.QuestionID,
+			"option_id":   answer.OptionID,
+			"label":       answer.Label,
+			"description": answer.Description,
+			"answer":      answer.Answer,
+		},
+	}, nil
+}
+
+func (s *RunService) buildInput(st *runState) (string, []agent.ImageInput) {
 	snapshot, ok := s.sessions.Get(st.run.SessionID)
 	if !ok {
-		return st.run.Prompt
+		return st.run.Prompt, nil
 	}
 	parts := []string{modePrompt(st.run.Mode)}
 	attachmentContext := renderAttachmentContext(snapshot.Attachments)
@@ -451,17 +511,17 @@ func (s *RunService) buildPrompt(st *runState) string {
 		parts = append(parts, attachmentContext)
 	}
 	parts = append(parts, "user request:\n"+st.run.Prompt)
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n"), imageInputsFromAttachments(snapshot.Attachments, st.run.Backend)
 }
 
 func modePrompt(mode string) string {
 	switch mode {
 	case "plan":
-		return "You are in plan mode. Do not perform mutating actions. Use update_plan before finalizing a plan. Ask the user for clarification in normal assistant text when needed."
+		return "You are in plan mode. Do not perform mutating actions. Use update_plan before finalizing a plan. Use request_user_input when a short structured user choice would unblock planning."
 	case "build":
-		return "You are in build mode. You may use tools, but mutating actions can require approval. Use update_plan when the work benefits from a visible plan."
+		return "You are in build mode. You may use tools, but mutating actions can require approval. Use update_plan when the work benefits from a visible plan. Use request_user_input when a concise multiple-choice question would help you proceed."
 	default:
-		return "You are in auto mode. Use update_plan when it helps the user follow the work. Prefer read-only inspection before mutating actions."
+		return "You are in auto mode. Use update_plan when it helps the user follow the work. Prefer read-only inspection before mutating actions. Use request_user_input when a short structured user choice would unblock the task."
 	}
 }
 
@@ -483,6 +543,47 @@ func renderAttachmentContext(attachments []Attachment) string {
 		}
 	}
 	return builder.String()
+}
+
+func imageInputsFromAttachments(attachments []Attachment, backend string) []agent.ImageInput {
+	if !supportsImageInputs(backend) {
+		return nil
+	}
+	out := make([]agent.ImageInput, 0, len(attachments))
+	for _, attachment := range attachments {
+		image, ok := attachmentImageInput(attachment)
+		if ok {
+			out = append(out, image)
+		}
+	}
+	return out
+}
+
+func supportsImageInputs(backend string) bool {
+	switch backend {
+	case "chatgpt", "openai", "openrouter":
+		return true
+	default:
+		return false
+	}
+}
+
+func attachmentImageInput(attachment Attachment) (agent.ImageInput, bool) {
+	if attachment.Size <= 0 || attachment.Size > 8<<20 {
+		return agent.ImageInput{}, false
+	}
+	data, err := os.ReadFile(attachment.Path)
+	if err != nil || len(data) == 0 {
+		return agent.ImageInput{}, false
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		return agent.ImageInput{}, false
+	}
+	return agent.ImageInput{
+		URL:    "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data),
+		Detail: "auto",
+	}, true
 }
 
 func readAttachmentSnippet(path string, size int64) string {

@@ -68,6 +68,20 @@ type PendingApproval struct {
 	UpdatedAt string         `json:"updated_at"`
 }
 
+type QuestionOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+type QuestionAnswer struct {
+	QuestionID  string `json:"question_id"`
+	OptionID    string `json:"option_id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Answer      string `json:"answer"`
+}
+
 type SessionSnapshot struct {
 	Session     Session           `json:"session"`
 	Entries     []SessionEntry    `json:"entries"`
@@ -85,6 +99,11 @@ type approvalWaiter struct {
 	resolved chan struct{}
 }
 
+type questionWaiter struct {
+	resolved chan struct{}
+	answer   QuestionAnswer
+}
+
 type CreateSession struct {
 	Title      string
 	Mode       string
@@ -97,6 +116,7 @@ type SessionService struct {
 	root      string
 	sessions  map[string]*sessionState
 	approvals map[string]*approvalWaiter
+	questions map[string]*questionWaiter
 	catalog   *SessionHub
 }
 
@@ -107,6 +127,7 @@ func NewSessionService(root string) *SessionService {
 		root:      root,
 		sessions:  make(map[string]*sessionState),
 		approvals: make(map[string]*approvalWaiter),
+		questions: make(map[string]*questionWaiter),
 		catalog:   NewSessionHub("sessions", 2048),
 	}
 	s.load()
@@ -242,6 +263,43 @@ func (s *SessionService) Hub(sessionID string) (*SessionHub, bool) {
 	return st.hub, true
 }
 
+func (s *SessionService) Delete(sessionID string) (Session, error) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	if !ok {
+		s.mu.Unlock()
+		return Session{}, fmt.Errorf("session not found")
+	}
+	st.mu.Lock()
+	status := st.snapshot.Session.Status
+	if status == "running" || status == "queued" {
+		st.mu.Unlock()
+		s.mu.Unlock()
+		return Session{}, fmt.Errorf("cannot delete a session while a run is in progress")
+	}
+	session := st.snapshot.Session
+	for _, approval := range st.snapshot.Approvals {
+		delete(s.approvals, approval.ID)
+	}
+	for _, entry := range st.snapshot.Entries {
+		if questionID := questionIDFromMeta(entry.Meta); questionID != "" {
+			delete(s.questions, questionID)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(s.root, sessionID)); err != nil {
+		st.mu.Unlock()
+		s.mu.Unlock()
+		return Session{}, err
+	}
+	delete(s.sessions, sessionID)
+	st.mu.Unlock()
+	s.mu.Unlock()
+
+	st.hub.Publish("session.deleted", map[string]any{"session_id": sessionID})
+	s.catalog.Publish("session.deleted", map[string]any{"session_id": sessionID})
+	return session, nil
+}
+
 func (s *SessionService) SetMode(sessionID, mode string) (Session, error) {
 	s.mu.Lock()
 	st, ok := s.sessions[sessionID]
@@ -250,14 +308,16 @@ func (s *SessionService) SetMode(sessionID, mode string) (Session, error) {
 		return Session{}, fmt.Errorf("session not found")
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	st.snapshot.Session.Mode = mode
 	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
 		return Session{}, err
 	}
-	s.publishSessionUpdate(st)
-	return st.snapshot.Session, nil
+	session := st.snapshot.Session
+	st.mu.Unlock()
+	s.publishSessionUpdate(session, st)
+	return session, nil
 }
 
 func (s *SessionService) SetStatus(sessionID, status string) error {
@@ -268,13 +328,15 @@ func (s *SessionService) SetStatus(sessionID, status string) error {
 		return fmt.Errorf("session not found")
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	st.snapshot.Session.Status = status
 	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
 		return err
 	}
-	s.publishSessionUpdate(st)
+	session := st.snapshot.Session
+	st.mu.Unlock()
+	s.publishSessionUpdate(session, st)
 	return nil
 }
 
@@ -286,7 +348,6 @@ func (s *SessionService) CreateEntry(sessionID string, entry SessionEntry) (Sess
 		return SessionEntry{}, fmt.Errorf("session not found")
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	entry.ID = newID("entry")
 	entry.SessionID = sessionID
@@ -298,10 +359,13 @@ func (s *SessionService) CreateEntry(sessionID string, entry SessionEntry) (Sess
 	st.snapshot.Entries = append(st.snapshot.Entries, entry)
 	s.touchSessionLocked(st, entry)
 	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
 		return SessionEntry{}, err
 	}
+	session := st.snapshot.Session
+	st.mu.Unlock()
 	st.hub.Publish("entry.created", map[string]any{"entry": entry})
-	s.publishSessionUpdate(st)
+	s.publishSessionUpdate(session, st)
 	return entry, nil
 }
 
@@ -313,7 +377,6 @@ func (s *SessionService) UpdateEntry(sessionID, entryID string, fn func(*Session
 		return SessionEntry{}, fmt.Errorf("session not found")
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	for i := range st.snapshot.Entries {
 		if st.snapshot.Entries[i].ID != entryID {
 			continue
@@ -322,12 +385,17 @@ func (s *SessionService) UpdateEntry(sessionID, entryID string, fn func(*Session
 		st.snapshot.Entries[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		s.touchSessionLocked(st, st.snapshot.Entries[i])
 		if err := s.saveStateLocked(st); err != nil {
+			st.mu.Unlock()
 			return SessionEntry{}, err
 		}
-		st.hub.Publish("entry.updated", map[string]any{"entry": st.snapshot.Entries[i]})
-		s.publishSessionUpdate(st)
-		return st.snapshot.Entries[i], nil
+		entry := st.snapshot.Entries[i]
+		session := st.snapshot.Session
+		st.mu.Unlock()
+		st.hub.Publish("entry.updated", map[string]any{"entry": entry})
+		s.publishSessionUpdate(session, st)
+		return entry, nil
 	}
+	st.mu.Unlock()
 	return SessionEntry{}, fmt.Errorf("entry not found")
 }
 
@@ -339,7 +407,6 @@ func (s *SessionService) AppendEntryContent(sessionID, entryID, chunk string) (S
 		return SessionEntry{}, fmt.Errorf("session not found")
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	for i := range st.snapshot.Entries {
 		if st.snapshot.Entries[i].ID != entryID {
 			continue
@@ -348,13 +415,160 @@ func (s *SessionService) AppendEntryContent(sessionID, entryID, chunk string) (S
 		st.snapshot.Entries[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		s.touchSessionLocked(st, st.snapshot.Entries[i])
 		if err := s.saveStateLocked(st); err != nil {
+			st.mu.Unlock()
 			return SessionEntry{}, err
 		}
-		st.hub.Publish("entry.delta", map[string]any{"entry_id": entryID, "text": chunk, "entry": st.snapshot.Entries[i]})
-		s.publishSessionUpdate(st)
-		return st.snapshot.Entries[i], nil
+		entry := st.snapshot.Entries[i]
+		session := st.snapshot.Session
+		st.mu.Unlock()
+		st.hub.Publish("entry.delta", map[string]any{"entry_id": entryID, "text": chunk, "entry": entry})
+		s.publishSessionUpdate(session, st)
+		return entry, nil
 	}
+	st.mu.Unlock()
 	return SessionEntry{}, fmt.Errorf("entry not found")
+}
+
+func (s *SessionService) UpdateUserEntry(sessionID, entryID, content string) (SessionEntry, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return SessionEntry{}, fmt.Errorf("content is required")
+	}
+	snapshot, ok := s.Get(sessionID)
+	if !ok {
+		return SessionEntry{}, fmt.Errorf("session not found")
+	}
+	found := false
+	for _, entry := range snapshot.Entries {
+		if entry.ID != entryID {
+			continue
+		}
+		found = true
+		if entry.Kind != "user_message" {
+			return SessionEntry{}, fmt.Errorf("only user messages can be edited")
+		}
+		break
+	}
+	if !found {
+		return SessionEntry{}, fmt.Errorf("entry not found")
+	}
+	return s.UpdateEntry(sessionID, entryID, func(entry *SessionEntry) {
+		entry.Content = content
+	})
+}
+
+func (s *SessionService) CreateQuestion(sessionID string, entry SessionEntry) (SessionEntry, error) {
+	questionID := strings.TrimSpace(questionIDFromMeta(entry.Meta))
+	if questionID == "" {
+		questionID = newID("question")
+	}
+	if entry.Meta == nil {
+		entry.Meta = map[string]any{}
+	}
+	entry.Kind = "question"
+	entry.Status = firstNonEmptyString(entry.Status, "pending")
+	entry.Meta["question_id"] = questionID
+	created, err := s.CreateEntry(sessionID, entry)
+	if err != nil {
+		return SessionEntry{}, err
+	}
+	s.mu.Lock()
+	s.questions[questionID] = &questionWaiter{resolved: make(chan struct{})}
+	s.mu.Unlock()
+	return created, nil
+}
+
+func (s *SessionService) AnswerQuestion(sessionID, questionID, optionID string) (SessionEntry, QuestionAnswer, error) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	waiter, waiterOK := s.questions[questionID]
+	s.mu.Unlock()
+	if !ok {
+		return SessionEntry{}, QuestionAnswer{}, fmt.Errorf("session not found")
+	}
+
+	st.mu.Lock()
+	for i := range st.snapshot.Entries {
+		entry := &st.snapshot.Entries[i]
+		if entry.Kind != "question" || questionIDFromMeta(entry.Meta) != questionID {
+			continue
+		}
+		if entry.Status != "pending" {
+			st.mu.Unlock()
+			return SessionEntry{}, QuestionAnswer{}, fmt.Errorf("question already answered")
+		}
+		options := questionOptionsFromMeta(entry.Meta["options"])
+		answer, ok := findQuestionAnswer(questionID, optionID, options)
+		if !ok {
+			st.mu.Unlock()
+			return SessionEntry{}, QuestionAnswer{}, fmt.Errorf("question option not found")
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		entry.Status = "answered"
+		entry.UpdatedAt = now
+		entry.Meta = cloneMap(entry.Meta)
+		entry.Meta["answer"] = map[string]any{
+			"question_id": answer.QuestionID,
+			"option_id":   answer.OptionID,
+			"label":       answer.Label,
+			"description": answer.Description,
+			"answer":      answer.Answer,
+		}
+		st.snapshot.Session.UpdatedAt = now
+		st.snapshot.Session.LatestEntryID = entry.ID
+		st.snapshot.Session.LatestPreview = trimPreview(answer.Answer)
+		if err := s.saveStateLocked(st); err != nil {
+			st.mu.Unlock()
+			return SessionEntry{}, QuestionAnswer{}, err
+		}
+		updatedEntry := *entry
+		session := st.snapshot.Session
+		st.mu.Unlock()
+
+		if waiterOK {
+			s.mu.Lock()
+			if current, ok := s.questions[questionID]; ok {
+				current.answer = answer
+				close(current.resolved)
+			} else {
+				waiter.answer = answer
+				close(waiter.resolved)
+				s.questions[questionID] = waiter
+			}
+			s.mu.Unlock()
+		}
+
+		st.hub.Publish("entry.updated", map[string]any{"entry": updatedEntry})
+		s.publishSessionUpdate(session, st)
+		return updatedEntry, answer, nil
+	}
+	st.mu.Unlock()
+	return SessionEntry{}, QuestionAnswer{}, fmt.Errorf("question not found")
+}
+
+func (s *SessionService) WaitForQuestion(ctx context.Context, questionID string) (QuestionAnswer, error) {
+	s.mu.Lock()
+	waiter, ok := s.questions[questionID]
+	s.mu.Unlock()
+	if !ok {
+		return QuestionAnswer{}, fmt.Errorf("question not found")
+	}
+	select {
+	case <-ctx.Done():
+		s.mu.Lock()
+		delete(s.questions, questionID)
+		s.mu.Unlock()
+		return QuestionAnswer{}, ctx.Err()
+	case <-waiter.resolved:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	answer := waiter.answer
+	delete(s.questions, questionID)
+	if answer.QuestionID == "" {
+		return QuestionAnswer{}, fmt.Errorf("question answer missing")
+	}
+	return answer, nil
 }
 
 func (s *SessionService) AddAttachment(sessionID, name string, r io.Reader) (Attachment, error) {
@@ -393,15 +607,75 @@ func (s *SessionService) AddAttachment(sessionID, name string, r io.Reader) (Att
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	st.snapshot.Attachments = append(st.snapshot.Attachments, attachment)
 	st.snapshot.Session.AttachmentCount = len(st.snapshot.Attachments)
 	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
 		return Attachment{}, err
 	}
+	session := st.snapshot.Session
+	st.mu.Unlock()
 	st.hub.Publish("session.updated", map[string]any{"attachment": attachment})
-	s.publishSessionUpdate(st)
+	s.publishSessionUpdate(session, st)
+	return attachment, nil
+}
+
+func (s *SessionService) GetAttachment(sessionID, attachmentID string) (Attachment, bool) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		return Attachment{}, false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, attachment := range st.snapshot.Attachments {
+		if attachment.ID == attachmentID {
+			return attachment, true
+		}
+	}
+	return Attachment{}, false
+}
+
+func (s *SessionService) RemoveAttachment(sessionID, attachmentID string) (Attachment, error) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		return Attachment{}, fmt.Errorf("session not found")
+	}
+
+	st.mu.Lock()
+	index := -1
+	var attachment Attachment
+	for i, item := range st.snapshot.Attachments {
+		if item.ID == attachmentID {
+			index = i
+			attachment = item
+			break
+		}
+	}
+	if index == -1 {
+		st.mu.Unlock()
+		return Attachment{}, fmt.Errorf("attachment not found")
+	}
+	if err := os.Remove(attachment.Path); err != nil && !os.IsNotExist(err) {
+		st.mu.Unlock()
+		return Attachment{}, err
+	}
+	st.snapshot.Attachments = append(st.snapshot.Attachments[:index], st.snapshot.Attachments[index+1:]...)
+	st.snapshot.Session.AttachmentCount = len(st.snapshot.Attachments)
+	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
+		return Attachment{}, err
+	}
+	session := st.snapshot.Session
+	st.mu.Unlock()
+
+	st.hub.Publish("session.updated", map[string]any{"attachment_removed_id": attachmentID})
+	s.publishSessionUpdate(session, st)
 	return attachment, nil
 }
 
@@ -447,12 +721,13 @@ func (s *SessionService) CreateApproval(sessionID, runID, entryID, toolName, sum
 		st.mu.Unlock()
 		return PendingApproval{}, err
 	}
+	session := st.snapshot.Session
 	st.mu.Unlock()
 	s.mu.Lock()
 	s.approvals[approval.ID] = &approvalWaiter{resolved: make(chan struct{})}
 	s.mu.Unlock()
 	st.hub.Publish("approval.updated", map[string]any{"approval": approval})
-	s.publishSessionUpdate(st)
+	s.publishSessionUpdate(session, st)
 	return approval, nil
 }
 
@@ -483,6 +758,7 @@ func (s *SessionService) ResolveApproval(approvalID, decision, note string) (Pen
 		}
 		if found {
 			approval := copyApproval(target.snapshot.Approvals, approvalID)
+			session := target.snapshot.Session
 			saveErr := s.saveStateLocked(target)
 			target.mu.Unlock()
 			if saveErr != nil {
@@ -495,7 +771,7 @@ func (s *SessionService) ResolveApproval(approvalID, decision, note string) (Pen
 			}
 			s.mu.Unlock()
 			target.hub.Publish("approval.updated", map[string]any{"approval": approval})
-			s.publishSessionUpdate(target)
+			s.publishSessionUpdate(session, target)
 			return approval, nil
 		}
 		st.mu.Unlock()
@@ -529,10 +805,7 @@ func (s *SessionService) WaitForApproval(ctx context.Context, approvalID string)
 	return PendingApproval{}, fmt.Errorf("approval not found")
 }
 
-func (s *SessionService) publishSessionUpdate(st *sessionState) {
-	st.mu.Lock()
-	session := st.snapshot.Session
-	st.mu.Unlock()
+func (s *SessionService) publishSessionUpdate(session Session, st *sessionState) {
 	st.hub.Publish("session.updated", map[string]any{"session": session})
 	s.catalog.Publish("session.updated", map[string]any{"session": session})
 }
@@ -587,6 +860,57 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func questionIDFromMeta(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	return strings.TrimSpace(asString(meta["question_id"]))
+}
+
+func questionOptionsFromMeta(value any) []QuestionOption {
+	list, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]QuestionOption, 0, len(list))
+	for index, raw := range list {
+		optionMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		label := strings.TrimSpace(asString(optionMap["label"]))
+		if label == "" {
+			continue
+		}
+		id := strings.TrimSpace(asString(optionMap["id"]))
+		if id == "" {
+			id = fmt.Sprintf("option_%d", index+1)
+		}
+		out = append(out, QuestionOption{
+			ID:          id,
+			Label:       label,
+			Description: strings.TrimSpace(asString(optionMap["description"])),
+		})
+	}
+	return out
+}
+
+func findQuestionAnswer(questionID, optionID string, options []QuestionOption) (QuestionAnswer, bool) {
+	for _, option := range options {
+		if option.ID != optionID {
+			continue
+		}
+		return QuestionAnswer{
+			QuestionID:  questionID,
+			OptionID:    option.ID,
+			Label:       option.Label,
+			Description: option.Description,
+			Answer:      option.Label,
+		}, true
+	}
+	return QuestionAnswer{}, false
 }
 
 func copyApproval(list []PendingApproval, approvalID string) PendingApproval {
