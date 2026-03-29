@@ -10,12 +10,17 @@ import (
 type createSessionRequest struct {
 	Title      string `json:"title"`
 	Mode       string `json:"mode"`
+	Thinking   string `json:"thinking"`
 	ProviderID string `json:"provider_id"`
 	Model      string `json:"model"`
 }
 
 type updateModeRequest struct {
 	Mode string `json:"mode"`
+}
+
+type updateThinkingRequest struct {
+	Thinking string `json:"thinking"`
 }
 
 type updateEntryRequest struct {
@@ -30,10 +35,11 @@ type createMessageRequest struct {
 	Prompt string `json:"prompt"`
 	Mode   string `json:"mode"`
 	LLM    struct {
-		ProviderID string `json:"provider_id"`
-		Model      string `json:"model"`
-		APIKey     string `json:"api_key"`
-		URL        string `json:"url"`
+		ProviderID      string `json:"provider_id"`
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+		APIKey          string `json:"api_key"`
+		URL             string `json:"url"`
 	} `json:"llm"`
 }
 
@@ -50,6 +56,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		session, err := s.sessions.Create(service.CreateSession{
 			Title:      req.Title,
 			Mode:       req.Mode,
+			Thinking:   req.Thinking,
 			ProviderID: req.ProviderID,
 			Model:      req.Model,
 		})
@@ -137,6 +144,22 @@ func (s *Server) handleSessionActions(w http.ResponseWriter, r *http.Request) {
 		session, err := s.sessions.SetMode(sessionID, req.Mode)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "mode_update_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"session": session})
+	case "thinking":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		var req updateThinkingRequest
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		session, err := s.sessions.SetThinking(sessionID, req.Thinking)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "thinking_update_failed", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"session": session})
@@ -256,13 +279,14 @@ func (s *Server) handleSessionActions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		run, err := s.runs.Create(r.Context(), service.CreateRun{
-			SessionID:  sessionID,
-			Prompt:     req.Prompt,
-			Mode:       req.Mode,
-			ProviderID: req.LLM.ProviderID,
-			Model:      req.LLM.Model,
-			APIKey:     req.LLM.APIKey,
-			URL:        req.LLM.URL,
+			SessionID:       sessionID,
+			Prompt:          req.Prompt,
+			Mode:            req.Mode,
+			ReasoningEffort: req.LLM.ReasoningEffort,
+			ProviderID:      req.LLM.ProviderID,
+			Model:           req.LLM.Model,
+			APIKey:          req.LLM.APIKey,
+			URL:             req.LLM.URL,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "message_create_failed", err.Error())

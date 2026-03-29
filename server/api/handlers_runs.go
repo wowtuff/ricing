@@ -12,10 +12,11 @@ type createRunRequest struct {
 	Prompt    string `json:"prompt"`
 	Mode      string `json:"mode"`
 	LLM       struct {
-		ProviderID string `json:"provider_id"`
-		Model      string `json:"model"`
-		APIKey     string `json:"api_key"`
-		URL        string `json:"url"`
+		ProviderID      string `json:"provider_id"`
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+		APIKey          string `json:"api_key"`
+		URL             string `json:"url"`
 	} `json:"llm"`
 }
 
@@ -49,13 +50,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run, err := s.runs.Create(r.Context(), service.CreateRun{
-		SessionID:  req.SessionID,
-		Prompt:     req.Prompt,
-		Mode:       mode,
-		ProviderID: providerID,
-		Model:      model,
-		APIKey:     req.LLM.APIKey,
-		URL:        req.LLM.URL,
+		SessionID:       req.SessionID,
+		Prompt:          req.Prompt,
+		Mode:            mode,
+		ReasoningEffort: req.LLM.ReasoningEffort,
+		ProviderID:      providerID,
+		Model:           model,
+		APIKey:          req.LLM.APIKey,
+		URL:             req.LLM.URL,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrProviderNotConnected) {

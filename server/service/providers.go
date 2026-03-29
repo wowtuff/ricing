@@ -201,12 +201,13 @@ func (s *ProviderService) Connect(ctx context.Context, id string, openBrowser bo
 }
 
 // Ping fires a test prompt against a provider and returns the AI's reply.
-func (s *ProviderService) Ping(ctx context.Context, id string, model string, apiKey string, url string) (string, error) {
+func (s *ProviderService) Ping(ctx context.Context, id string, model string, apiKey string, url string, reasoningEffort string) (string, error) {
 	return agent.Ping(ctx, agent.RunOptions{
-		Backend: id,
-		Model:   model,
-		APIKey:  apiKey,
-		URL:     url,
+		Backend:         id,
+		Model:           model,
+		ReasoningEffort: reasoningEffort,
+		APIKey:          apiKey,
+		URL:             url,
 	})
 }
 

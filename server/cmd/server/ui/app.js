@@ -38,6 +38,7 @@ const sessionTitle = document.getElementById("sessionTitle");
 const sessionModeLabel = document.getElementById("sessionModeLabel");
 const sessionState = document.getElementById("sessionState");
 const deleteSessionButton = document.getElementById("deleteSessionButton");
+const thinkingSelect = document.getElementById("thinkingSelect");
 const modeSelect = document.getElementById("modeSelect");
 const connectPanel = document.getElementById("connectPanel");
 const connectButton = document.getElementById("connectButton");
@@ -72,15 +73,17 @@ const providerOAuth = document.getElementById("providerOAuth");
 const providerTest = document.getElementById("providerTest");
 const providerSave = document.getElementById("providerSave");
 
+thinkingSelect.value = normalizeThinkingValue(state.config.thinking);
+
 function loadStoredConfig() {
   try {
     const raw = localStorage.getItem("ricing-config");
     if (!raw) {
-      return { provider: "", model: "", apiKey: "", url: "" };
+      return { provider: "", model: "", thinking: "", apiKey: "", url: "" };
     }
     return normalizeConfig(JSON.parse(raw));
   } catch {
-    return { provider: "", model: "", apiKey: "", url: "" };
+    return { provider: "", model: "", thinking: "", apiKey: "", url: "" };
   }
 }
 
@@ -95,19 +98,21 @@ function normalizeConfig(config) {
   return {
     provider,
     model: `${config?.model || defaults.model || ""}`.trim(),
+    thinking: normalizeThinkingValue(config?.thinking),
     apiKey: `${config?.apiKey || ""}`.trim(),
     url: `${config?.url || defaults.url || ""}`.trim()
   };
 }
 
 function currentConfig() {
-  if (state.config.provider) {
-    return normalizeConfig(state.config);
+  const stored = normalizeConfig(state.config);
+  if (stored.provider) {
+    return stored;
   }
   if (state.oauthConnected) {
-    return normalizeConfig({ provider: "chatgpt" });
+    return normalizeConfig({ ...stored, provider: "chatgpt" });
   }
-  return normalizeConfig({});
+  return stored;
 }
 
 function providerLabel(provider) {
@@ -119,6 +124,41 @@ function providerSummary(config = currentConfig()) {
     return "choose provider";
   }
   return config.model ? `${providerLabel(config.provider)} / ${config.model}` : providerLabel(config.provider);
+}
+
+function normalizeThinkingValue(value) {
+  const next = `${value || ""}`.trim().toLowerCase();
+  if (["", "auto", "default"].includes(next)) {
+    return "";
+  }
+  if (["low", "medium", "high"].includes(next)) {
+    return next;
+  }
+  return "";
+}
+
+function thinkingLabel(value) {
+  const next = normalizeThinkingValue(value);
+  return next ? `think ${next}` : "";
+}
+
+function currentThinkingValue() {
+  if (thinkingSelect) {
+    return normalizeThinkingValue(thinkingSelect.value);
+  }
+  if (state.activeSnapshot?.session) {
+    return normalizeThinkingValue(state.activeSnapshot.session.thinking);
+  }
+  return normalizeThinkingValue(currentConfig().thinking);
+}
+
+function providerRunSummary(config = currentConfig(), thinking = currentThinkingValue()) {
+  const summary = providerSummary(config);
+  if (!config.provider) {
+    return summary;
+  }
+  const label = thinkingLabel(thinking);
+  return label ? `${summary} / ${label}` : summary;
 }
 
 function providerStateText(config = currentConfig()) {
@@ -149,10 +189,12 @@ function hasReadyProvider(config = currentConfig()) {
 
 function activeProviderPayload() {
   const config = currentConfig();
+  const reasoningEffort = currentThinkingValue();
   if (config.provider === "chatgpt") {
     return {
       provider_id: state.oauthProviderId || "",
       model: config.model || providerDefaults.chatgpt.model,
+      reasoning_effort: reasoningEffort,
       api_key: "",
       url: ""
     };
@@ -160,6 +202,7 @@ function activeProviderPayload() {
   return {
     provider_id: config.provider,
     model: config.model,
+    reasoning_effort: reasoningEffort,
     api_key: config.apiKey,
     url: config.url
   };
@@ -225,10 +268,10 @@ function renderProviderState() {
   backendStatus.className = "status-badge subtle";
   backendStatus.textContent = state.backendOnline ? "localhost online" : "backend offline";
   backendStatus.classList.add(state.backendOnline ? "connected" : "failed");
-  providerAction.textContent = providerSummary(config);
+  providerAction.textContent = providerRunSummary(config);
   providerStatus.className = "status-badge";
   providerStatus.textContent = providerStateText(config);
-  connectionSummary.textContent = providerSummary(config);
+  connectionSummary.textContent = providerRunSummary(config);
   if (hasReadyProvider(config)) {
     providerStatus.classList.add("connected");
   } else if (config.provider === "chatgpt") {
@@ -256,6 +299,7 @@ function providerDraft() {
   return normalizeConfig({
     provider: providerSelect.value,
     model: modelInput.value,
+    thinking: currentThinkingValue(),
     apiKey: apiKeyInput.value,
     url: urlInput.value
   });
@@ -295,7 +339,12 @@ async function connectOAuth() {
     setProviderMessage("the backend is offline or the oauth provider is unavailable.");
     return;
   }
-  saveStoredConfig({ provider: "chatgpt", model: modelInput.value || providerDefaults.chatgpt.model });
+  saveStoredConfig({
+    ...currentConfig(),
+    provider: "chatgpt",
+    model: modelInput.value || providerDefaults.chatgpt.model,
+    thinking: currentThinkingValue()
+  });
   renderProviderState();
   providerOAuth.disabled = true;
   setProviderMessage("opening chatgpt oauth...");
@@ -341,6 +390,7 @@ async function testProvider() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: config.model,
+        reasoning_effort: config.thinking,
         api_key: config.apiKey,
         url: config.url
       })
@@ -403,6 +453,7 @@ async function createSession() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       mode: modeSelect.value || "auto",
+      thinking: currentThinkingValue(),
       provider_id: payload.provider_id,
       model: payload.model
     })
@@ -434,6 +485,7 @@ async function selectSession(sessionId) {
   const res = await api(`/api/v1/sessions/${sessionId}`);
   const data = await res.json();
   state.activeSnapshot = data;
+  thinkingSelect.value = normalizeThinkingValue(data.session?.thinking || currentConfig().thinking);
   modeSelect.value = data.session?.mode || "auto";
   renderAll();
   openSessionSocket(sessionId);
@@ -494,6 +546,7 @@ function handleSessionMessage(message) {
   }
   if (message.type === "session.snapshot") {
     state.activeSnapshot = message.data;
+    thinkingSelect.value = normalizeThinkingValue(state.activeSnapshot.session?.thinking || currentConfig().thinking);
     modeSelect.value = state.activeSnapshot.session?.mode || "auto";
     renderAll();
     return;
@@ -538,6 +591,7 @@ function handleSessionMessage(message) {
   }
   if (message.type === "session.updated" && message.data?.session) {
     state.activeSnapshot.session = { ...state.activeSnapshot.session, ...message.data.session };
+    thinkingSelect.value = normalizeThinkingValue(state.activeSnapshot.session?.thinking || currentConfig().thinking);
     if (!["running", "queued"].includes(message.data.session.status || "")) {
       state.activeRunId = "";
     }
@@ -591,6 +645,7 @@ function removeSessionLocal(sessionId) {
   state.activeRunId = "";
   state.localEntries = [];
   state.editingEntryId = "";
+  thinkingSelect.value = normalizeThinkingValue(currentConfig().thinking);
 }
 
 function removeMatchedLocalEntry(entry) {
@@ -901,6 +956,9 @@ function renderSessions() {
   sessionList.innerHTML = filtered.map((session) => {
     const active = session.id === state.activeSessionId ? " active" : "";
     const tags = [`<span class="tag">${escapeHTML(session.mode || "auto")}</span>`];
+    if (session.thinking) {
+      tags.push(`<span class="tag">${escapeHTML(thinkingLabel(session.thinking))}</span>`);
+    }
     if (session.status && session.status !== "idle") {
       tags.push(`<span class="tag">${escapeHTML(session.status)}</span>`);
     }
@@ -929,17 +987,22 @@ function renderVisibility() {
   composer.classList.toggle("is-hidden", !hasSession);
 }
 
+function bannerModeText(mode, thinking) {
+  const label = thinkingLabel(thinking);
+  return label ? `${mode || "auto"} / ${label}` : mode || "auto";
+}
+
 function renderBanner() {
   const session = state.activeSnapshot?.session;
   if (!session) {
     sessionTitle.textContent = "select a session";
-    sessionModeLabel.textContent = modeSelect.value || "auto";
+    sessionModeLabel.textContent = bannerModeText(modeSelect.value, currentThinkingValue());
     applySessionStatusBadge(sessionState, "");
     deleteSessionButton.classList.add("is-hidden");
     return;
   }
   sessionTitle.textContent = session.title || "new session";
-  sessionModeLabel.textContent = session.mode || "auto";
+  sessionModeLabel.textContent = bannerModeText(session.mode, session.thinking);
   applySessionStatusBadge(sessionState, session.status);
   deleteSessionButton.classList.remove("is-hidden");
   deleteSessionButton.disabled = ["running", "queued"].includes(session.status || "");
@@ -1251,6 +1314,7 @@ async function sendPrompt() {
   if (state.activeSnapshot?.session) {
     state.activeSnapshot.session.provider_id = payload.provider_id;
     state.activeSnapshot.session.model = payload.model;
+    state.activeSnapshot.session.thinking = payload.reasoning_effort;
   }
   promptInput.value = "";
   sendButton.disabled = true;
@@ -1331,6 +1395,38 @@ async function setMode() {
     }
     renderBanner();
     renderSessions();
+  }
+}
+
+async function setThinking() {
+  const thinking = currentThinkingValue();
+  saveStoredConfig({ ...currentConfig(), thinking });
+  renderProviderState();
+  if (!state.activeSessionId) {
+    renderBanner();
+    return;
+  }
+  try {
+    const res = await api(`/api/v1/sessions/${state.activeSessionId}/thinking`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thinking })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || "could not save thinking mode");
+    }
+    upsertSession(data.session);
+    if (state.activeSnapshot?.session) {
+      state.activeSnapshot.session.thinking = data.session.thinking;
+    }
+    renderBanner();
+    renderSessions();
+    renderComposerState();
+  } catch (error) {
+    thinkingSelect.value = normalizeThinkingValue(state.activeSnapshot?.session?.thinking || currentConfig().thinking);
+    composerStatus.textContent = error.message || "could not save thinking mode";
+    renderProviderState();
   }
 }
 
@@ -1449,6 +1545,7 @@ providerTest.addEventListener("click", testProvider);
 providerOAuth.addEventListener("click", connectOAuth);
 newSessionButton.addEventListener("click", createSession);
 deleteSessionButton.addEventListener("click", () => deleteSession());
+thinkingSelect.addEventListener("change", setThinking);
 modeSelect.addEventListener("change", setMode);
 sendButton.addEventListener("click", sendPrompt);
 cancelEditButton.addEventListener("click", cancelEditMessage);

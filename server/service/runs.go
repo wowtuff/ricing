@@ -18,18 +18,19 @@ import (
 )
 
 type Run struct {
-	ID         string `json:"id"`
-	SessionID  string `json:"session_id"`
-	CreatedAt  string `json:"created_at"`
-	Status     string `json:"status"`
-	Mode       string `json:"mode"`
-	Prompt     string `json:"prompt,omitempty"`
-	ProviderID string `json:"provider_id"`
-	Model      string `json:"model"`
-	Backend    string `json:"backend"`
-	APIKey     string `json:"-"`
-	URL        string `json:"url"`
-	Result     *struct {
+	ID              string `json:"id"`
+	SessionID       string `json:"session_id"`
+	CreatedAt       string `json:"created_at"`
+	Status          string `json:"status"`
+	Mode            string `json:"mode"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	ProviderID      string `json:"provider_id"`
+	Model           string `json:"model"`
+	Backend         string `json:"backend"`
+	APIKey          string `json:"-"`
+	URL             string `json:"url"`
+	Result          *struct {
 		OutputText string `json:"output_text"`
 	} `json:"result,omitempty"`
 	Error *struct {
@@ -39,13 +40,14 @@ type Run struct {
 }
 
 type CreateRun struct {
-	SessionID  string
-	Prompt     string
-	Mode       string
-	ProviderID string
-	Model      string
-	APIKey     string
-	URL        string
+	SessionID       string
+	Prompt          string
+	Mode            string
+	ReasoningEffort string
+	ProviderID      string
+	Model           string
+	APIKey          string
+	URL             string
 }
 
 type runState struct {
@@ -95,6 +97,7 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 	if req.Mode == "" {
 		req.Mode = firstNonEmptyString(sessionSnapshot.Session.Mode, "auto")
 	}
+	req.ReasoningEffort = firstNonEmptyString(normalizeThinkingEffort(req.ReasoningEffort), sessionSnapshot.Session.Thinking)
 	backend := s.providers.BackendForProvider(req.ProviderID)
 	if backend == "" {
 		backend = req.ProviderID
@@ -102,17 +105,18 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 	runID := newID("run")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	run := Run{
-		ID:         runID,
-		SessionID:  sessionSnapshot.Session.ID,
-		CreatedAt:  now,
-		Status:     "queued",
-		Mode:       req.Mode,
-		Prompt:     req.Prompt,
-		ProviderID: req.ProviderID,
-		Model:      req.Model,
-		Backend:    backend,
-		APIKey:     req.APIKey,
-		URL:        req.URL,
+		ID:              runID,
+		SessionID:       sessionSnapshot.Session.ID,
+		CreatedAt:       now,
+		Status:          "queued",
+		Mode:            req.Mode,
+		ReasoningEffort: req.ReasoningEffort,
+		Prompt:          req.Prompt,
+		ProviderID:      req.ProviderID,
+		Model:           req.Model,
+		Backend:         backend,
+		APIKey:          req.APIKey,
+		URL:             req.URL,
 	}
 	if _, err := s.sessions.CreateEntry(run.SessionID, SessionEntry{
 		RunID:   runID,
@@ -133,6 +137,7 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 		ctx:    ctx2,
 		cancel: cancel,
 	}
+	_, _ = s.sessions.SetRunConfig(run.SessionID, run.ProviderID, run.Model, run.ReasoningEffort)
 	s.mu.Lock()
 	s.runs[runID] = st
 	s.mu.Unlock()
@@ -151,6 +156,9 @@ func (s *RunService) ensureSession(req CreateRun) (SessionSnapshot, CreateRun, e
 		if req.Mode == "" {
 			req.Mode = snapshot.Session.Mode
 		}
+		if req.ReasoningEffort == "" {
+			req.ReasoningEffort = snapshot.Session.Thinking
+		}
 		if req.ProviderID == "" {
 			req.ProviderID = snapshot.Session.ProviderID
 		}
@@ -162,6 +170,7 @@ func (s *RunService) ensureSession(req CreateRun) (SessionSnapshot, CreateRun, e
 	session, err := s.sessions.Create(CreateSession{
 		Title:      req.Prompt,
 		Mode:       req.Mode,
+		Thinking:   req.ReasoningEffort,
 		ProviderID: req.ProviderID,
 		Model:      req.Model,
 	})
@@ -226,11 +235,12 @@ func (s *RunService) execute(st *runState) {
 	var output string
 	prompt, images := s.buildInput(st)
 	err := agent.RunStream(st.ctx, s.reg, agent.RunOptions{
-		Model:   st.run.Model,
-		Backend: st.run.Backend,
-		APIKey:  st.run.APIKey,
-		URL:     st.run.URL,
-		Images:  images,
+		Model:           st.run.Model,
+		Backend:         st.run.Backend,
+		ReasoningEffort: st.run.ReasoningEffort,
+		APIKey:          st.run.APIKey,
+		URL:             st.run.URL,
+		Images:          images,
 	}, prompt, agent.StreamSink{
 		OnDelta: func(text string) {
 			st.appendDelta(text)

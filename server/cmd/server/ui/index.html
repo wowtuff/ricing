@@ -44,7 +44,13 @@
           <div class="banner-actions">
             <span class="status-badge subtle is-hidden" id="sessionState"></span>
             <button class="ghost-button is-hidden" id="deleteSessionButton">delete session</button>
-            <select id="modeSelect">
+            <select class="banner-select" id="thinkingSelect">
+              <option value="">think: default</option>
+              <option value="low">think: low</option>
+              <option value="medium">think: medium</option>
+              <option value="high">think: high</option>
+            </select>
+            <select class="banner-select" id="modeSelect">
               <option value="auto">auto</option>
               <option value="plan">plan</option>
               <option value="build">build</option>

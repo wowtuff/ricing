@@ -51,9 +51,10 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 type pingProviderRequest struct {
-	Model  string `json:"model"`
-	APIKey string `json:"api_key"`
-	URL    string `json:"url"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	APIKey          string `json:"api_key"`
+	URL             string `json:"url"`
 }
 
 func (s *Server) handleProviderActions(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +102,7 @@ func (s *Server) handleProviderActions(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		reply, err := s.providers.Ping(ctx, providerID, req.Model, req.APIKey, req.URL)
+		reply, err := s.providers.Ping(ctx, providerID, req.Model, req.APIKey, req.URL, req.ReasoningEffort)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "ping_failed", err.Error())
 			return

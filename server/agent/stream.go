@@ -13,11 +13,12 @@ import (
 
 // runoptions carries per-run overrides — backend selection, model, and credentials.
 type RunOptions struct {
-	Model   string
-	Backend string
-	APIKey  string
-	URL     string
-	Images  []ImageInput
+	Model           string
+	Backend         string
+	ReasoningEffort string
+	APIKey          string
+	URL             string
+	Images          []ImageInput
 }
 
 // streamtoolcall is a tool invocation surfaced to the caller mid-stream.
@@ -128,6 +129,9 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 			Stream:             true,
 			Include:            []string{},
 		}
+		if effort := normalizeReasoningEffort(opts.ReasoningEffort); effort != "" && reasoningEffortSupported(model) {
+			req.Reasoning = &wsReasoning{Effort: effort}
+		}
 
 		if err := conn.WriteJSON(req); err != nil {
 			return utils.LogError("websocket write error: %s", err)
@@ -196,10 +200,11 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 // runstreamrest handles the agentic loop for all non-chatgpt backends, it calls Complete in a loop, forwarding deltas and tool calls to the sink
 func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, userPrompt string, sink StreamSink) error {
 	cfg := Config{
-		Backend: opts.Backend,
-		Model:   opts.Model,
-		APIKey:  opts.APIKey,
-		URL:     opts.URL,
+		Backend:         opts.Backend,
+		Model:           opts.Model,
+		ReasoningEffort: opts.ReasoningEffort,
+		APIKey:          opts.APIKey,
+		URL:             opts.URL,
 	}
 
 	var backend Backend
@@ -207,17 +212,17 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 
 	switch cfg.Backend {
 	case "openai":
-		backend, err = restBackendFn("https://api.openai.com/v1", cfg.Model, cfg.APIKey)
+		backend, err = restBackendFn("https://api.openai.com/v1", cfg.Model, cfg.APIKey, cfg.ReasoningEffort)
 	case "anthropic":
 		backend, err = anthropic(cfg.Model, cfg.APIKey)
 	case "gemini":
 		backend, err = gemini(cfg.Model, cfg.APIKey)
 	case "openrouter":
-		backend, err = restBackendFn("https://openrouter.ai/api/v1", cfg.Model, cfg.APIKey)
+		backend, err = restBackendFn("https://openrouter.ai/api/v1", cfg.Model, cfg.APIKey, cfg.ReasoningEffort)
 	case "ollama", "lmstudio", "local":
-		backend, err = restBackendFn(cfg.URL, cfg.Model, "")
+		backend, err = restBackendFn(cfg.URL, cfg.Model, "", "")
 	default:
-		backend, err = restBackendFn(cfg.URL, cfg.Model, cfg.APIKey)
+		backend, err = restBackendFn(cfg.URL, cfg.Model, cfg.APIKey, cfg.ReasoningEffort)
 	}
 
 	if err != nil {

@@ -50,26 +50,31 @@ type tokenData struct {
 	IdToken      string `json:"id_token"`
 }
 
-//raw json body from the token endpoint
+// raw json body from the token endpoint
 type oauthResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IdToken      string `json:"id_token"`
 }
 
-//the payload sent over the websocket to kick off a new response
+// the payload sent over the websocket to kick off a new response
 type wsRequest struct {
-	Type               string    `json:"type"`
-	Model              string    `json:"model"`
-	Instructions       string    `json:"instructions"`
-	PreviousResponseID *string   `json:"previous_response_id,omitempty"`
-	Input              []wsInput `json:"input"`
-	Tools              []any     `json:"tools"`
-	ToolChoice         string    `json:"tool_choice"`
-	ParallelToolCalls  bool      `json:"parallel_tool_calls"`
-	Store              bool      `json:"store"`
-	Stream             bool      `json:"stream"`
-	Include            []string  `json:"include"`
+	Type               string       `json:"type"`
+	Model              string       `json:"model"`
+	Instructions       string       `json:"instructions"`
+	Reasoning          *wsReasoning `json:"reasoning,omitempty"`
+	PreviousResponseID *string      `json:"previous_response_id,omitempty"`
+	Input              []wsInput    `json:"input"`
+	Tools              []any        `json:"tools"`
+	ToolChoice         string       `json:"tool_choice"`
+	ParallelToolCalls  bool         `json:"parallel_tool_calls"`
+	Store              bool         `json:"store"`
+	Stream             bool         `json:"stream"`
+	Include            []string     `json:"include"`
+}
+
+type wsReasoning struct {
+	Effort string `json:"effort"`
 }
 
 // one item in the input array — either a user message or a tool result
@@ -81,7 +86,7 @@ type wsInput struct {
 	Output  string      `json:"output,omitempty"`
 }
 
-//typed text block inside a message
+// typed text block inside a message
 type wsContent struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
@@ -89,7 +94,7 @@ type wsContent struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
-//any event pushed from the server over the websocket
+// any event pushed from the server over the websocket
 type wsEvent struct {
 	Type     string          `json:"type"`
 	Delta    string          `json:"delta,omitempty"`
@@ -111,18 +116,27 @@ type wsResponseCompleted struct {
 	ID string `json:"id"`
 }
 
-//talks to the codex websocket api using a cached oauth token
+// talks to the codex websocket api using a cached oauth token
 type chatGPTBackend struct {
-	token string
+	token           string
+	model           string
+	reasoningEffort string
 }
 
 // loads the cached token and returns a ready-to-use chatGPTBackend
-func chatGPT() (*chatGPTBackend, error) {
+func chatGPT(model, reasoningEffort string) (*chatGPTBackend, error) {
 	token, err := getOrRefreshToken(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("auth error: %w", err)
 	}
-	return &chatGPTBackend{token: token}, nil
+	if model == "" {
+		model = "gpt-5.2-codex"
+	}
+	return &chatGPTBackend{
+		token:           token,
+		model:           model,
+		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
+	}, nil
 }
 
 // complete dials the codex websocket, sends the conversation, and streamsevents until the response is complete or an error occurs
@@ -162,7 +176,7 @@ func (b *chatGPTBackend) Complete(ctx context.Context, messages []Message, specs
 
 	req := wsRequest{
 		Type:              "response.create",
-		Model:             "gpt-5.2-codex",
+		Model:             b.model,
 		Instructions:      defaultInstructions(messageSetHasImages(messages)),
 		Input:             input,
 		Tools:             toolSpecs,
@@ -171,6 +185,9 @@ func (b *chatGPTBackend) Complete(ctx context.Context, messages []Message, specs
 		Store:             false,
 		Stream:            true,
 		Include:           []string{},
+	}
+	if b.reasoningEffort != "" && reasoningEffortSupported(b.model) {
+		req.Reasoning = &wsReasoning{Effort: b.reasoningEffort}
 	}
 
 	if err := conn.WriteJSON(req); err != nil {
@@ -217,7 +234,7 @@ func (b *chatGPTBackend) Complete(ctx context.Context, messages []Message, specs
 	}
 }
 
-//converts internal messages to the websocket input format.
+// converts internal messages to the websocket input format.
 func messagesToWSInput(messages []Message) []wsInput {
 	var input []wsInput
 	for _, m := range messages {
@@ -250,7 +267,7 @@ func messagesToWSInput(messages []Message) []wsInput {
 	return input
 }
 
-//converts our generic tool specs into the shape the ws api expects.
+// converts our generic tool specs into the shape the ws api expects.
 func buildWSToolSpecs(specs []tools.ToolSpec) []any {
 	out := make([]any, 0, len(specs))
 	for _, spec := range specs {
@@ -325,7 +342,7 @@ func loginFlow(ctx context.Context) (string, error) {
 	return exchangeCode(ctx, code, verifier)
 }
 
-//trades the authorization code + pkce verifier for an access token, then writes it to the cache file so future runs don't need the browser
+// trades the authorization code + pkce verifier for an access token, then writes it to the cache file so future runs don't need the browser
 func exchangeCode(ctx context.Context, code, verifier string) (string, error) {
 	resp, err := http.PostForm(openaiTokenURL, url.Values{
 		"grant_type":    {"authorization_code"},
@@ -401,13 +418,13 @@ func generateVerifier() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-//hashes the verifier to produce the pkce code challenge
+// hashes the verifier to produce the pkce code challenge
 func generateChallenge(verifier string) string {
 	h := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
-//pulls the chatgpt_account_id out of the jwt payload, returning empty string if the token is malformed or the claim is absent
+// pulls the chatgpt_account_id out of the jwt payload, returning empty string if the token is malformed or the claim is absent
 func extractAccountID(token string) string {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {

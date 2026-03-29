@@ -17,6 +17,7 @@ type Session struct {
 	ID               string `json:"id"`
 	Title            string `json:"title"`
 	Mode             string `json:"mode"`
+	Thinking         string `json:"thinking,omitempty"`
 	Status           string `json:"status"`
 	ProviderID       string `json:"provider_id"`
 	Model            string `json:"model"`
@@ -107,6 +108,7 @@ type questionWaiter struct {
 type CreateSession struct {
 	Title      string
 	Mode       string
+	Thinking   string
 	ProviderID string
 	Model      string
 }
@@ -209,10 +211,12 @@ func (s *SessionService) Create(req CreateSession) (Session, error) {
 	if req.Mode == "" {
 		req.Mode = "auto"
 	}
+	req.Thinking = normalizeThinkingEffort(req.Thinking)
 	session := Session{
 		ID:         newID("sess"),
 		Title:      normalizeSessionTitle(req.Title),
 		Mode:       req.Mode,
+		Thinking:   req.Thinking,
 		Status:     "idle",
 		ProviderID: req.ProviderID,
 		Model:      req.Model,
@@ -309,6 +313,48 @@ func (s *SessionService) SetMode(sessionID, mode string) (Session, error) {
 	}
 	st.mu.Lock()
 	st.snapshot.Session.Mode = mode
+	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
+		return Session{}, err
+	}
+	session := st.snapshot.Session
+	st.mu.Unlock()
+	s.publishSessionUpdate(session, st)
+	return session, nil
+}
+
+func (s *SessionService) SetThinking(sessionID, thinking string) (Session, error) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		return Session{}, fmt.Errorf("session not found")
+	}
+	st.mu.Lock()
+	st.snapshot.Session.Thinking = normalizeThinkingEffort(thinking)
+	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
+		return Session{}, err
+	}
+	session := st.snapshot.Session
+	st.mu.Unlock()
+	s.publishSessionUpdate(session, st)
+	return session, nil
+}
+
+func (s *SessionService) SetRunConfig(sessionID, providerID, model, thinking string) (Session, error) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		return Session{}, fmt.Errorf("session not found")
+	}
+	st.mu.Lock()
+	st.snapshot.Session.ProviderID = providerID
+	st.snapshot.Session.Model = model
+	st.snapshot.Session.Thinking = normalizeThinkingEffort(thinking)
 	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := s.saveStateLocked(st); err != nil {
 		st.mu.Unlock()
@@ -832,6 +878,17 @@ func normalizeSessionTitle(input string) string {
 		return string(runes[:48]) + "..."
 	}
 	return input
+}
+
+func normalizeThinkingEffort(input string) string {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "", "auto", "default":
+		return ""
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(input))
+	default:
+		return ""
+	}
 }
 
 func trimPreview(input string) string {
