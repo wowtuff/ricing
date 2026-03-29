@@ -143,7 +143,7 @@ button:disabled {
 
 .workspace {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  grid-template-columns: 280px minmax(0, 1fr);
   min-height: 0;
   height: 100%;
   overflow: hidden;
@@ -435,6 +435,14 @@ textarea {
   background: #0e1620;
 }
 
+.entry-card.tool_call,
+.entry-card.change,
+.entry-card.verification,
+.entry-card.system {
+  border-color: rgba(107, 119, 135, 0.25);
+  background: rgba(19, 26, 36, 0.7);
+}
+
 .entry-card.approval.pending {
   border-color: rgba(245, 158, 11, 0.45);
 }
@@ -451,6 +459,20 @@ textarea {
 .entry-card.system {
   background: transparent;
   border-style: dashed;
+}
+
+.entry-card.tool_call .entry-title,
+.entry-card.change .entry-title,
+.entry-card.verification .entry-title,
+.entry-card.system .entry-title {
+  color: var(--text-dim);
+}
+
+.entry-card.tool_call .entry-content,
+.entry-card.change .entry-content,
+.entry-card.verification .entry-content,
+.entry-card.system .entry-content {
+  color: var(--text-soft);
 }
 
 .entry-card.failed {
@@ -960,10 +982,6 @@ input::placeholder {
 @media (max-width: 1220px) {
   .workspace {
     grid-template-columns: 280px minmax(0, 1fr);
-  }
-
-  .activity-pane {
-    display: none;
   }
 }
 

@@ -54,8 +54,6 @@ const attachButton = document.getElementById("attachButton");
 const fileInput = document.getElementById("fileInput");
 const attachmentSummary = document.getElementById("attachmentSummary");
 const composerAttachments = document.getElementById("composerAttachments");
-const approvalList = document.getElementById("approvalList");
-const activityList = document.getElementById("activityList");
 const attachmentPreviewDialog = document.getElementById("attachmentPreviewDialog");
 const attachmentPreviewImage = document.getElementById("attachmentPreviewImage");
 const attachmentPreviewName = document.getElementById("attachmentPreviewName");
@@ -947,8 +945,53 @@ function renderBanner() {
   deleteSessionButton.disabled = ["running", "queued"].includes(session.status || "");
 }
 
+function currentApprovalStatus(entry) {
+  const approvalId = `${entry.meta?.approval_id || ""}`.trim();
+  if (!approvalId) {
+    return entry.status || "";
+  }
+  const approval = (state.activeSnapshot?.approvals || []).find((item) => item.id === approvalId);
+  return approval?.status || entry.status || "";
+}
+
+function isEntryVisible(entry) {
+  if (entry.kind === "approval") {
+    return currentApprovalStatus(entry) === "pending";
+  }
+  if (entry.kind === "question") {
+    return entry.status === "pending";
+  }
+  return true;
+}
+
+function isInlineActivity(entry) {
+  return ["tool_call", "change", "verification", "system"].includes(entry.kind);
+}
+
+function latestOpenToolCallEntryId() {
+  const entries = state.activeSnapshot?.entries || [];
+  const activeRunId = state.activeRunId;
+  if (!activeRunId) {
+    return "";
+  }
+  const toolCalls = entries.filter((entry) => entry.kind === "tool_call" && entry.run_id === activeRunId);
+  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+    const toolCall = toolCalls[index];
+    const hasResult = entries.some((entry) => entry.kind === "tool_result" && entry.meta?.tool_call_entry_id === toolCall.id);
+    if (!hasResult) {
+      return toolCall.id;
+    }
+  }
+  return "";
+}
+
 function transcriptEntries() {
-  const sessionEntries = (state.activeSnapshot?.entries || []).filter((entry) => ["user_message", "assistant_message", "plan", "approval", "question", "system"].includes(entry.kind));
+  const sessionEntries = (state.activeSnapshot?.entries || []).filter((entry) => {
+    if (!["user_message", "assistant_message", "plan", "approval", "question", "tool_call", "change", "verification", "system"].includes(entry.kind)) {
+      return false;
+    }
+    return isEntryVisible(entry);
+  });
   return sessionEntries.concat(state.localEntries).sort((left, right) => {
     if (typeof left.seq === "number" && typeof right.seq === "number") {
       return left.seq - right.seq;
@@ -984,12 +1027,18 @@ function entryLabel(entry) {
       return "you";
     case "assistant_message":
       return entry.status === "streaming" ? "assistant streaming" : "assistant";
+    case "tool_call":
+      return entry.title || "running tool";
+    case "change":
+      return "change";
+    case "verification":
+      return "verification";
     case "plan":
       return "plan";
     case "question":
       return entry.title || "question";
     case "approval":
-      return `approval ${entry.status || ""}`.trim();
+      return "approval";
     case "system":
       return entry.title || "system";
     default:
@@ -1001,8 +1050,14 @@ function entryMeta(entry) {
   if (["sending", "queued", "failed", "answered"].includes(entry.status || "")) {
     return entry.status;
   }
+  if (entry.kind === "approval") {
+    return "waiting";
+  }
   if (entry.kind === "question" && entry.status === "pending") {
     return "waiting";
+  }
+  if (entry.kind === "tool_call" && latestOpenToolCallEntryId() === entry.id) {
+    return "running";
   }
   return formatRelative(entry.updated_at || entry.created_at);
 }
@@ -1040,7 +1095,7 @@ function renderEntryCard(entry) {
   const status = entry.status ? ` ${escapeHTML(entry.status)}` : "";
   let actions = "";
   let body = `<div class="entry-content">${escapeHTML(entry.content || "")}</div>`;
-  if (entry.kind === "approval" && entry.status === "pending") {
+  if (entry.kind === "approval" && currentApprovalStatus(entry) === "pending") {
     const approvalId = entry.meta?.approval_id;
     if (approvalId) {
       actions = `<div class="approval-actions"><button class="ghost-button" data-approval-action="reject" data-approval-id="${escapeHTML(approvalId)}">reject</button><button class="primary-button" data-approval-action="approve" data-approval-id="${escapeHTML(approvalId)}">approve</button></div>`;
@@ -1058,16 +1113,6 @@ function renderEntryCard(entry) {
     actions = `${actions}<div class="entry-card-actions"><button class="entry-inline-action" data-edit-entry="${escapeHTML(entry.id)}">edit</button></div>`;
   }
   return `<article class="entry-card ${escapeHTML(entry.kind)}${status}"><div class="entry-head"><span class="entry-title">${escapeHTML(entryLabel(entry))}</span><div class="entry-head-meta"><span class="entry-meta">${escapeHTML(entryMeta(entry))}</span></div></div>${body}${actions}</article>`;
-}
-
-function renderApprovals() {
-  const approvals = (state.activeSnapshot?.approvals || []).filter((item) => item.status === "pending");
-  approvalList.innerHTML = approvals.length === 0 ? `<div class="info-card">no pending approvals</div>` : approvals.map((approval) => {
-    return `<div class="approval-card ${escapeHTML(approval.status)}"><div class="approval-title">${escapeHTML(approval.tool_name)}</div><div class="approval-content">${escapeHTML(approval.summary || "")}</div><div class="approval-actions"><button class="ghost-button" data-approval-action="reject" data-approval-id="${escapeHTML(approval.id)}">reject</button><button class="primary-button" data-approval-action="approve" data-approval-id="${escapeHTML(approval.id)}">approve</button></div></div>`;
-  }).join("");
-  approvalList.querySelectorAll("[data-approval-action]").forEach((button) => {
-    button.addEventListener("click", () => resolveApproval(button.dataset.approvalId, button.dataset.approvalAction));
-  });
 }
 
 function renderAttachments() {
@@ -1094,18 +1139,12 @@ function renderAttachments() {
   });
 }
 
-function renderActivity() {
-  const entries = (state.activeSnapshot?.entries || []).filter((entry) => ["tool_call", "tool_result", "change", "verification"].includes(entry.kind));
-  activityList.innerHTML = entries.length === 0 ? `<div class="info-card">tool calls, changes, and verification results will show up here</div>` : entries.map((entry) => {
-    return `<div class="activity-card"><div class="activity-card-head"><div class="activity-card-title">${escapeHTML(entry.title || entry.kind)}</div><div class="entry-meta">${escapeHTML(entry.kind)}</div></div><div class="activity-card-content">${escapeHTML(entry.content || "")}</div></div>`;
-  }).join("");
-}
-
 function renderComposerState() {
   const session = state.activeSnapshot?.session;
   const pendingLocal = [...state.localEntries].reverse().find((entry) => entry.kind === "user_message" && ["sending", "queued"].includes(entry.status || ""));
   const editing = currentEditingEntry();
   const pendingQuestion = (state.activeSnapshot?.entries || []).find((entry) => entry.kind === "question" && entry.status === "pending");
+  const pendingApproval = (state.activeSnapshot?.approvals || []).find((approval) => approval.status === "pending");
   stopButton.classList.toggle("is-hidden", !state.activeRunId);
   cancelEditButton.classList.toggle("is-hidden", !editing);
   sendButton.textContent = editing ? "save" : "send";
@@ -1124,6 +1163,10 @@ function renderComposerState() {
   }
   if (pendingQuestion) {
     composerStatus.textContent = "answer the question to continue";
+    return;
+  }
+  if (pendingApproval) {
+    composerStatus.textContent = "approve or reject to continue";
     return;
   }
   if (session.status === "running" || session.status === "queued") {
@@ -1147,9 +1190,7 @@ function renderAll() {
   renderBanner();
   renderSessions();
   renderTranscript();
-  renderApprovals();
   renderAttachments();
-  renderActivity();
   renderComposerState();
 }
 
@@ -1297,11 +1338,24 @@ async function resolveApproval(approvalId, decision) {
   if (!approvalId) {
     return;
   }
-  await api(`/api/v1/approvals/${approvalId}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision })
-  });
+  try {
+    const res = await api(`/api/v1/approvals/${approvalId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || "could not resolve approval");
+    }
+    if (data.approval) {
+      upsertApproval(data.approval);
+    }
+    composerStatus.textContent = decision === "approve" ? "approved" : "rejected";
+    renderAll();
+  } catch (error) {
+    composerStatus.textContent = error.message || "could not resolve approval";
+  }
 }
 
 async function uploadFiles(files) {
