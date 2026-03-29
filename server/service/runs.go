@@ -358,7 +358,7 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 		})
 		return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
 	}
-	if needsApproval(call) {
+	if modeNeedsApproval(st.run.Mode, call) {
 		approval, err := s.sessions.CreateApproval(st.run.SessionID, st.run.ID, toolCallEntry.ID, call.Name, summarizeToolCall(call), cloneMap(call.Arguments))
 		if err != nil {
 			return agent.ToolResult{}, err
@@ -516,11 +516,15 @@ func (s *RunService) buildInput(st *runState) (string, []agent.ImageInput) {
 		return st.run.Prompt, nil
 	}
 	parts := []string{modePrompt(st.run.Mode)}
+	history := renderConversationHistory(snapshot.Entries, st.run.ID)
+	if history != "" {
+		parts = append(parts, "conversation so far:\n"+history)
+	}
 	attachmentContext := renderAttachmentContext(snapshot.Attachments)
 	if attachmentContext != "" {
 		parts = append(parts, attachmentContext)
 	}
-	parts = append(parts, "user request:\n"+st.run.Prompt)
+	parts = append(parts, "latest user request:\n"+st.run.Prompt)
 	return strings.Join(parts, "\n\n"), imageInputsFromAttachments(snapshot.Attachments, st.run.Backend)
 }
 
@@ -530,6 +534,8 @@ func modePrompt(mode string) string {
 		return "You are in plan mode. Do not perform mutating actions. Use update_plan before finalizing a plan. Use request_user_input when a short structured user choice would unblock planning."
 	case "build":
 		return "You are in build mode. You may use tools, but mutating actions can require approval. Use update_plan when the work benefits from a visible plan. Use request_user_input when a concise multiple-choice question would help you proceed."
+	case "full":
+		return "You are in full permission mode. You may use tools freely, including mutating actions, without waiting for approval prompts. Stay careful, explain significant changes clearly, and use update_plan when it helps the user follow the work."
 	default:
 		return "You are in auto mode. Use update_plan when it helps the user follow the work. Prefer read-only inspection before mutating actions. Use request_user_input when a short structured user choice would unblock the task."
 	}
@@ -553,6 +559,62 @@ func renderAttachmentContext(attachments []Attachment) string {
 		}
 	}
 	return builder.String()
+}
+
+func renderConversationHistory(entries []SessionEntry, currentRunID string) string {
+	relevant := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.RunID == currentRunID {
+			continue
+		}
+		switch entry.Kind {
+		case "user_message":
+			text := strings.TrimSpace(entry.Content)
+			if text != "" {
+				relevant = append(relevant, "user: "+text)
+			}
+		case "assistant_message":
+			text := strings.TrimSpace(entry.Content)
+			if text != "" {
+				relevant = append(relevant, "assistant: "+text)
+			}
+		case "question":
+			question := strings.TrimSpace(entry.Content)
+			if question != "" {
+				relevant = append(relevant, "assistant: "+question)
+			}
+			answer := strings.TrimSpace(questionAnswerText(entry.Meta))
+			if answer != "" {
+				relevant = append(relevant, "user: "+answer)
+			}
+		}
+	}
+	if len(relevant) == 0 {
+		return ""
+	}
+	if len(relevant) > 24 {
+		relevant = relevant[len(relevant)-24:]
+	}
+	history := strings.Join(relevant, "\n\n")
+	runes := []rune(history)
+	if len(runes) > 12000 {
+		history = string(runes[len(runes)-12000:])
+	}
+	return strings.TrimSpace(history)
+}
+
+func questionAnswerText(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	answerMap, ok := meta["answer"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(firstNonEmptyString(
+		asString(answerMap["answer"]),
+		asString(answerMap["label"]),
+	))
 }
 
 func imageInputsFromAttachments(attachments []Attachment, backend string) []agent.ImageInput {
@@ -764,6 +826,13 @@ func isMutatingCall(call agent.StreamToolCall) bool {
 
 func needsApproval(call agent.StreamToolCall) bool {
 	return isMutatingCall(call)
+}
+
+func modeNeedsApproval(mode string, call agent.StreamToolCall) bool {
+	if mode == "full" {
+		return false
+	}
+	return needsApproval(call)
 }
 
 func describeChange(call agent.StreamToolCall, output map[string]any) string {

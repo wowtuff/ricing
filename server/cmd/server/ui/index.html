@@ -13,6 +13,7 @@
   <div class="app-shell">
     <header class="header-bar">
       <div class="header-brand">
+        <button class="ghost-button rail-toggle-button" id="sessionRailToggle" aria-label="open sessions">sessions</button>
         <h1 class="wordmark"><span>r</span>icing<span class="wordmark-cursor">_</span></h1>
       </div>
       <div class="header-actions">
@@ -35,66 +36,68 @@
         </label>
         <div class="session-list" id="sessionList"></div>
       </aside>
+      <button class="session-rail-backdrop is-hidden" id="sessionRailBackdrop" aria-label="close sessions"></button>
       <main class="main-pane">
-        <section class="session-banner">
-          <div>
-            <p class="section-label" id="sessionModeLabel">auto</p>
-            <h2 id="sessionTitle">select a session</h2>
-          </div>
-          <div class="banner-actions">
-            <span class="status-badge subtle is-hidden" id="sessionState"></span>
-            <button class="ghost-button is-hidden" id="deleteSessionButton">delete session</button>
-            <select class="banner-select" id="thinkingSelect">
-              <option value="">think: default</option>
-              <option value="low">think: low</option>
-              <option value="medium">think: medium</option>
-              <option value="high">think: high</option>
-            </select>
-            <select class="banner-select" id="modeSelect">
-              <option value="auto">auto</option>
-              <option value="plan">plan</option>
-              <option value="build">build</option>
-            </select>
-          </div>
-        </section>
-        <section class="connect-panel" id="connectPanel">
-          <div class="empty-card">
-            <p class="section-label">provider</p>
-            <h3>pick a provider before you send work to the agent</h3>
-            <p>chatgpt oauth, openai, openrouter, anthropic, gemini, ollama, and lm studio all live behind the same localhost backend.</p>
-            <button class="primary-button" id="connectButton">open provider settings</button>
-          </div>
-        </section>
-        <section class="empty-panel" id="emptyPanel">
-          <div class="empty-card">
-            <p class="section-label">ready</p>
-            <h3>open a session or start a new one</h3>
-            <p>plans, approvals, changes, verification, and attachments stay attached to the same backend session whether you use the browser or the cli.</p>
-          </div>
-        </section>
-        <div class="transcript" id="transcript"></div>
-        <section class="composer" id="composer">
-          <div class="composer-toolbar">
-            <div class="toolbar-group">
-              <button class="ghost-button" id="attachButton">add files</button>
-              <div class="composer-hint" id="attachmentSummary">no files attached</div>
+        <div class="chat-column">
+          <section class="session-banner">
+            <div>
+              <p class="section-label" id="sessionModeLabel">auto</p>
+              <h2 id="sessionTitle">select a session</h2>
             </div>
-            <div class="toolbar-group">
-              <div class="composer-hint" id="connectionSummary">choose a provider</div>
-              <button class="ghost-button is-hidden" id="stopButton">stop run</button>
+            <div class="banner-actions">
+              <span class="status-badge subtle is-hidden" id="sessionState"></span>
+              <button class="ghost-button is-hidden" id="deleteSessionButton">delete session</button>
             </div>
-          </div>
-          <div class="composer-attachments is-hidden" id="composerAttachments"></div>
-          <textarea id="promptInput" placeholder="tell the agent what to change, inspect, or verify"></textarea>
-          <div class="composer-actions">
-            <div class="composer-hint" id="composerStatus">ready</div>
-            <div class="toolbar-group">
-              <button class="ghost-button is-hidden" id="cancelEditButton">cancel edit</button>
-              <button class="primary-button" id="sendButton">send</button>
+          </section>
+          <section class="connect-panel" id="connectPanel">
+            <div class="empty-card">
+              <p class="section-label">provider</p>
+              <h3>pick a provider before you send work to the agent</h3>
+              <p>chatgpt oauth, openai, openrouter, anthropic, gemini, ollama, and lm studio all live behind the same localhost backend.</p>
+              <button class="primary-button" id="connectButton">open provider settings</button>
             </div>
-          </div>
-          <input id="fileInput" type="file" multiple hidden>
-        </section>
+          </section>
+          <section class="empty-panel" id="emptyPanel">
+            <div class="empty-card">
+              <p class="section-label">ready</p>
+              <h3>open a session or start a new one</h3>
+              <p>plans, approvals, changes, verification, and attachments stay attached to the same backend session whether you use the browser or the cli.</p>
+            </div>
+          </section>
+          <div class="transcript" id="transcript"></div>
+          <section class="composer" id="composer">
+            <div class="composer-attachments is-hidden" id="composerAttachments"></div>
+            <textarea id="promptInput" placeholder="ask for follow-up changes"></textarea>
+            <div class="composer-footer">
+              <div class="toolbar-group composer-footer-left">
+                <button class="ghost-button composer-icon-button" id="attachButton" aria-label="add files">+</button>
+                <div class="composer-hint" id="attachmentSummary">no files attached</div>
+                <button class="ghost-button is-hidden" id="cancelEditButton">cancel edit</button>
+              </div>
+              <div class="toolbar-group composer-footer-center">
+                <div class="composer-hint composer-provider-pill" id="connectionSummary">choose a provider</div>
+                <select class="banner-select compact-select" id="modeSelect">
+                  <option value="auto">auto</option>
+                  <option value="plan">plan</option>
+                  <option value="build">build</option>
+                  <option value="full">full permission</option>
+                </select>
+                <select class="banner-select compact-select" id="thinkingSelect">
+                  <option value="">default</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </div>
+              <div class="toolbar-group composer-footer-right">
+                <div class="composer-hint" id="composerStatus">ready</div>
+                <button class="ghost-button is-hidden composer-stop-button" id="stopButton">stop</button>
+                <button class="primary-button composer-send-button" id="sendButton">send</button>
+              </div>
+            </div>
+            <input id="fileInput" type="file" multiple hidden>
+          </section>
+        </div>
       </main>
     </div>
   </div>

@@ -25,13 +25,16 @@ const state = {
   backendOrigin: pageOrigin || defaultBackendOrigin,
   config: loadStoredConfig(),
   localEntries: [],
-  editingEntryId: ""
+  editingEntryId: "",
+  expandedActivityGroups: {}
 };
 
 const backendStatus = document.getElementById("backendStatus");
 const providerAction = document.getElementById("providerAction");
 const providerStatus = document.getElementById("providerStatus");
 const newSessionButton = document.getElementById("newSessionButton");
+const sessionRailToggle = document.getElementById("sessionRailToggle");
+const sessionRailBackdrop = document.getElementById("sessionRailBackdrop");
 const sessionSearch = document.getElementById("sessionSearch");
 const sessionList = document.getElementById("sessionList");
 const sessionTitle = document.getElementById("sessionTitle");
@@ -142,6 +145,19 @@ function thinkingLabel(value) {
   return next ? `think ${next}` : "";
 }
 
+function modeLabel(value) {
+  switch (`${value || ""}`.trim().toLowerCase()) {
+    case "full":
+      return "full permission";
+    case "build":
+      return "build";
+    case "plan":
+      return "plan";
+    default:
+      return "auto";
+  }
+}
+
 function currentThinkingValue() {
   if (thinkingSelect) {
     return normalizeThinkingValue(thinkingSelect.value);
@@ -159,6 +175,24 @@ function providerRunSummary(config = currentConfig(), thinking = currentThinking
   }
   const label = thinkingLabel(thinking);
   return label ? `${summary} / ${label}` : summary;
+}
+
+function openSessionRail() {
+  document.body.classList.add("session-rail-open");
+  sessionRailBackdrop?.classList.remove("is-hidden");
+}
+
+function closeSessionRail() {
+  document.body.classList.remove("session-rail-open");
+  sessionRailBackdrop?.classList.add("is-hidden");
+}
+
+function toggleSessionRail() {
+  if (document.body.classList.contains("session-rail-open")) {
+    closeSessionRail();
+    return;
+  }
+  openSessionRail();
 }
 
 function providerStateText(config = currentConfig()) {
@@ -465,6 +499,7 @@ async function createSession() {
   }
   upsertSession(data.session);
   await selectSession(data.session.id);
+  closeSessionRail();
   return data.session;
 }
 
@@ -482,12 +517,14 @@ async function selectSession(sessionId) {
   state.activeRunId = "";
   state.localEntries = [];
   state.editingEntryId = "";
+  state.expandedActivityGroups = {};
   const res = await api(`/api/v1/sessions/${sessionId}`);
   const data = await res.json();
   state.activeSnapshot = data;
   thinkingSelect.value = normalizeThinkingValue(data.session?.thinking || currentConfig().thinking);
   modeSelect.value = data.session?.mode || "auto";
   renderAll();
+  closeSessionRail();
   openSessionSocket(sessionId);
 }
 
@@ -645,7 +682,9 @@ function removeSessionLocal(sessionId) {
   state.activeRunId = "";
   state.localEntries = [];
   state.editingEntryId = "";
+  state.expandedActivityGroups = {};
   thinkingSelect.value = normalizeThinkingValue(currentConfig().thinking);
+  closeSessionRail();
 }
 
 function removeMatchedLocalEntry(entry) {
@@ -955,7 +994,7 @@ function renderSessions() {
   });
   sessionList.innerHTML = filtered.map((session) => {
     const active = session.id === state.activeSessionId ? " active" : "";
-    const tags = [`<span class="tag">${escapeHTML(session.mode || "auto")}</span>`];
+    const tags = [`<span class="tag">${escapeHTML(modeLabel(session.mode))}</span>`];
     if (session.thinking) {
       tags.push(`<span class="tag">${escapeHTML(thinkingLabel(session.thinking))}</span>`);
     }
@@ -989,7 +1028,8 @@ function renderVisibility() {
 
 function bannerModeText(mode, thinking) {
   const label = thinkingLabel(thinking);
-  return label ? `${mode || "auto"} / ${label}` : mode || "auto";
+  const base = modeLabel(mode);
+  return label ? `${base} / ${label}` : base;
 }
 
 function renderBanner() {
@@ -1048,6 +1088,74 @@ function latestOpenToolCallEntryId() {
   return "";
 }
 
+function lastEntryForKinds(kinds, runId = "") {
+  const entries = state.activeSnapshot?.entries || [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!kinds.includes(entry.kind)) {
+      continue;
+    }
+    if (runId && entry.run_id !== runId) {
+      continue;
+    }
+    return entry;
+  }
+  return null;
+}
+
+function activePlanEntry() {
+  return lastEntryForKinds(["plan"], state.activeRunId) || lastEntryForKinds(["plan"]);
+}
+
+function thinkingStatusSummary() {
+  const session = state.activeSnapshot?.session;
+  if (!session) {
+    return "";
+  }
+  if (session.status === "queued") {
+    return "Queued and waiting to start";
+  }
+  const openToolCallId = latestOpenToolCallEntryId();
+  if (openToolCallId) {
+    const toolEntry = (state.activeSnapshot?.entries || []).find((entry) => entry.id === openToolCallId);
+    if (toolEntry) {
+      return activityText(toolEntry) || "Running a tool";
+    }
+  }
+  const latestActivity = lastEntryForKinds(["tool_call", "change", "verification", "system"], state.activeRunId);
+  if (latestActivity) {
+    return activityText(latestActivity);
+  }
+  return "Working on your request";
+}
+
+function shouldShowThinkingEntry() {
+  const session = state.activeSnapshot?.session;
+  if (!session || !["running", "queued"].includes(session.status || "")) {
+    return false;
+  }
+  if ((state.activeSnapshot?.entries || []).some((entry) => entry.kind === "question" && entry.status === "pending")) {
+    return false;
+  }
+  if ((state.activeSnapshot?.approvals || []).some((approval) => approval.status === "pending")) {
+    return false;
+  }
+  return true;
+}
+
+function pendingThinkingEntry() {
+  if (!shouldShowThinkingEntry()) {
+    return null;
+  }
+  return {
+    id: "__thinking__",
+    kind: "thinking_status",
+    status: state.activeSnapshot?.session?.status || "running",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
 function transcriptEntries() {
   const sessionEntries = (state.activeSnapshot?.entries || []).filter((entry) => {
     if (!["user_message", "assistant_message", "plan", "approval", "question", "tool_call", "change", "verification", "system"].includes(entry.kind)) {
@@ -1055,7 +1163,7 @@ function transcriptEntries() {
     }
     return isEntryVisible(entry);
   });
-  return sessionEntries.concat(state.localEntries).sort((left, right) => {
+  const entries = sessionEntries.concat(state.localEntries).sort((left, right) => {
     if (typeof left.seq === "number" && typeof right.seq === "number") {
       return left.seq - right.seq;
     }
@@ -1067,11 +1175,57 @@ function transcriptEntries() {
     }
     return new Date(left.created_at || 0).getTime() - new Date(right.created_at || 0).getTime();
   });
+  const thinkingEntry = pendingThinkingEntry();
+  if (thinkingEntry) {
+    entries.push(thinkingEntry);
+  }
+  return collapseFinishedActivity(entries);
+}
+
+function collapseFinishedActivity(entries) {
+  const collapsed = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (
+      !isInlineActivity(entry) ||
+      !entry.run_id ||
+      entry.run_id === state.activeRunId
+    ) {
+      collapsed.push(entry);
+      continue;
+    }
+    const group = [entry];
+    let cursor = index + 1;
+    while (cursor < entries.length) {
+      const candidate = entries[cursor];
+      if (!isInlineActivity(candidate) || candidate.run_id !== entry.run_id) {
+        break;
+      }
+      group.push(candidate);
+      cursor += 1;
+    }
+    index = cursor - 1;
+    const groupId = `activity_group_${entry.run_id}_${entry.id}`;
+    collapsed.push({
+      id: groupId,
+      kind: "activity_group",
+      group_id: groupId,
+      run_id: entry.run_id,
+      entries: group,
+      expanded: Boolean(state.expandedActivityGroups[groupId]),
+      created_at: group[0].created_at,
+      updated_at: group[group.length - 1].updated_at
+    });
+  }
+  return collapsed;
 }
 
 function renderTranscript() {
   const entries = transcriptEntries();
   transcript.innerHTML = entries.map(renderEntryCard).join("");
+  transcript.querySelectorAll("[data-activity-toggle]").forEach((button) => {
+    button.addEventListener("click", () => toggleActivityGroup(button.dataset.activityToggle));
+  });
   transcript.querySelectorAll("[data-approval-action]").forEach((button) => {
     button.addEventListener("click", () => resolveApproval(button.dataset.approvalId, button.dataset.approvalAction));
   });
@@ -1089,15 +1243,15 @@ function entryLabel(entry) {
     case "user_message":
       return "you";
     case "assistant_message":
-      return entry.status === "streaming" ? "assistant streaming" : "assistant";
+      return "assistant";
     case "tool_call":
-      return entry.title || "running tool";
+      return "activity";
     case "change":
       return "change";
     case "verification":
       return "verification";
     case "plan":
-      return "plan";
+      return "thinking";
     case "question":
       return entry.title || "question";
     case "approval":
@@ -1125,17 +1279,157 @@ function entryMeta(entry) {
   return formatRelative(entry.updated_at || entry.created_at);
 }
 
-function questionAnswer(entry) {
-  const answer = entry.meta?.answer;
-  if (!answer) {
-    return null;
+function planSteps(entry) {
+  const steps = Array.isArray(entry.meta?.steps) ? entry.meta.steps : [];
+  return steps.map((step) => ({
+    title: `${step?.title || ""}`.trim(),
+    status: `${step?.status || ""}`.trim().toLowerCase()
+  })).filter((step) => step.title);
+}
+
+function planSummary(entry) {
+  const summary = `${entry.meta?.summary || ""}`.trim();
+  if (summary) {
+    return summary;
   }
-  return {
-    option_id: `${answer.option_id || ""}`.trim(),
-    label: `${answer.label || answer.answer || ""}`.trim(),
-    description: `${answer.description || ""}`.trim(),
-    answer: `${answer.answer || answer.label || ""}`.trim()
-  };
+  const firstLine = `${entry.content || ""}`.split("\n").map((line) => line.trim()).find(Boolean);
+  return firstLine || "";
+}
+
+function planStepStatusLabel(status) {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "in_progress":
+      return "in progress";
+    case "pending":
+      return "pending";
+    default:
+      return status || "pending";
+  }
+}
+
+function planStepIcon(status) {
+  switch (status) {
+    case "completed":
+      return "●";
+    case "in_progress":
+      return "◔";
+    default:
+      return "○";
+  }
+}
+
+function renderPlanEntry(entry) {
+  const steps = planSteps(entry);
+  const completed = steps.filter((step) => step.status === "completed").length;
+  const progress = steps.length > 0
+    ? `${completed} out of ${steps.length} tasks completed`
+    : "thinking through the task";
+  const summary = planSummary(entry);
+  const summaryMarkup = summary ? `<div class="plan-card-summary">${escapeHTML(summary)}</div>` : "";
+  const stepMarkup = steps.map((step) => {
+    const status = step.status || "pending";
+    return `<div class="plan-step ${escapeHTML(status)}"><span class="plan-step-icon">${escapeHTML(planStepIcon(status))}</span><div><div class="plan-step-text">${escapeHTML(step.title)}</div><div class="plan-step-status">${escapeHTML(planStepStatusLabel(status))}</div></div></div>`;
+  }).join("");
+  const listMarkup = stepMarkup ? `<div class="plan-step-list">${stepMarkup}</div>` : "";
+  return `<p class="plan-caption">Thinking</p><div class="plan-card-shell"><div class="plan-progress">${escapeHTML(progress)}</div>${summaryMarkup}${listMarkup}</div>`;
+}
+
+function renderThinkingStatusEntry() {
+  const planEntry = activePlanEntry();
+  const summary = thinkingStatusSummary();
+  const updatedAt = lastEntryForKinds(["tool_call", "change", "verification", "system", "assistant_message"], state.activeRunId)?.updated_at
+    || state.activeSnapshot?.session?.updated_at
+    || "";
+  const statusLine = updatedAt ? `Last update ${escapeHTML(formatRelative(updatedAt))}` : "Waiting for the next update";
+  const summaryMarkup = summary ? `<div class="thinking-status-summary">${escapeHTML(summary)}</div>` : "";
+  const detailMarkup = `<div class="thinking-status-detail">${statusLine}</div>`;
+  if (!planEntry) {
+    return `<p class="plan-caption">Thinking</p><div class="thinking-status-shell"><div class="thinking-status-pill">live</div>${summaryMarkup}${detailMarkup}</div>`;
+  }
+  const steps = planSteps(planEntry);
+  const completed = steps.filter((step) => step.status === "completed").length;
+  const progress = steps.length > 0
+    ? `${completed} out of ${steps.length} tasks completed`
+    : "thinking through the task";
+  const stepMarkup = steps.map((step) => {
+    const status = step.status || "pending";
+    return `<div class="plan-step ${escapeHTML(status)}"><span class="plan-step-icon">${escapeHTML(planStepIcon(status))}</span><div><div class="plan-step-text">${escapeHTML(step.title)}</div><div class="plan-step-status">${escapeHTML(planStepStatusLabel(status))}</div></div></div>`;
+  }).join("");
+  const listMarkup = stepMarkup ? `<div class="plan-step-list">${stepMarkup}</div>` : "";
+  return `<p class="plan-caption">Thinking</p><div class="thinking-status-shell"><div class="thinking-status-pill">live</div><div class="plan-progress">${escapeHTML(progress)}</div>${summaryMarkup}${detailMarkup}${listMarkup}</div>`;
+}
+
+function compactToolArgs(value) {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  return value.map((item) => `${item ?? ""}`.trim()).filter(Boolean).join(" ");
+}
+
+function activityText(entry) {
+  if (entry.kind === "tool_call") {
+    const tool = `${entry.title || ""}`.trim();
+    if (tool === "cmd") {
+      const command = `${entry.meta?.command || ""}`.trim();
+      const args = compactToolArgs(entry.meta?.args);
+      const payload = [command, args].filter(Boolean).join(" ");
+      return payload ? `Ran ${payload}` : "Ran command";
+    }
+    if (tool === "apply_patch") {
+      return "Applied a patch";
+    }
+    if (tool === "update_plan") {
+      return "Updated the plan";
+    }
+    if (tool === "request_user_input") {
+      return "Asked for a quick choice";
+    }
+    return tool ? `Ran ${tool}` : "Ran tool";
+  }
+  if (entry.kind === "change") {
+    return entry.content || "Recorded a change";
+  }
+  if (entry.kind === "verification") {
+    return entry.content || "Verification finished";
+  }
+  return entry.content || entry.title || entry.kind;
+}
+
+function toggleActivityGroup(groupId) {
+  if (!groupId) {
+    return;
+  }
+  state.expandedActivityGroups[groupId] = !state.expandedActivityGroups[groupId];
+  renderTranscript();
+}
+
+function renderActivityGroupEntry(entry) {
+  const logs = Array.isArray(entry.entries) ? entry.entries : [];
+  const count = logs.length;
+  const latest = logs[logs.length - 1];
+  const summary = latest ? activityText(latest) : "Activity finished";
+  const details = entry.expanded
+    ? `<div class="activity-group-lines">${logs.map((log) => `<div class="activity-line">${escapeHTML(activityText(log))}</div>`).join("")}</div>`
+    : "";
+  const toggleLabel = entry.expanded ? "hide logs" : "show logs";
+  return `
+    <article class="entry-card activity-group">
+      <div class="entry-head">
+        <span class="entry-title">activity</span>
+        <div class="entry-head-meta">
+          <span class="entry-meta">${escapeHTML(formatRelative(entry.updated_at || entry.created_at))}</span>
+        </div>
+      </div>
+      <div class="activity-group-summary">${escapeHTML(count === 1 ? "1 activity update" : `${count} activity updates`)}</div>
+      <div class="activity-group-latest">${escapeHTML(summary)}</div>
+      ${details}
+      <div class="entry-card-actions">
+        <button class="entry-inline-action" data-activity-toggle="${escapeHTML(entry.group_id || entry.id)}">${toggleLabel}</button>
+      </div>
+    </article>
+  `;
 }
 
 function renderQuestionEntry(entry) {
@@ -1154,7 +1448,35 @@ function renderQuestionEntry(entry) {
   return `<div class="entry-content">${escapeHTML(entry.content || "")}</div><div class="question-options">${buttons}</div>${answerSummary}`;
 }
 
+function questionAnswer(entry) {
+  const answer = entry.meta?.answer;
+  if (!answer) {
+    return null;
+  }
+  return {
+    option_id: `${answer.option_id || ""}`.trim(),
+    label: `${answer.label || answer.answer || ""}`.trim(),
+    description: `${answer.description || ""}`.trim(),
+    answer: `${answer.answer || answer.label || ""}`.trim()
+  };
+}
+
 function renderEntryCard(entry) {
+  if (entry.kind === "activity_group") {
+    return renderActivityGroupEntry(entry);
+  }
+  if (isInlineActivity(entry)) {
+    return `<article class="entry-card activity-entry ${escapeHTML(entry.kind)}"><div class="activity-line">${escapeHTML(activityText(entry))}</div></article>`;
+  }
+  if (entry.kind === "plan") {
+    if (shouldShowThinkingEntry() && activePlanEntry()?.id === entry.id) {
+      return "";
+    }
+    return `<article class="entry-card plan ${escapeHTML(entry.status || "")}">${renderPlanEntry(entry)}</article>`;
+  }
+  if (entry.kind === "thinking_status") {
+    return `<article class="entry-card thinking-status ${escapeHTML(entry.status || "")}">${renderThinkingStatusEntry()}</article>`;
+  }
   const status = entry.status ? ` ${escapeHTML(entry.status)}` : "";
   let actions = "";
   let body = `<div class="entry-content">${escapeHTML(entry.content || "")}</div>`;
@@ -1211,7 +1533,7 @@ function renderComposerState() {
   stopButton.classList.toggle("is-hidden", !state.activeRunId);
   cancelEditButton.classList.toggle("is-hidden", !editing);
   sendButton.textContent = editing ? "save" : "send";
-  promptInput.placeholder = editing ? "update your message" : "tell the agent what to change, inspect, or verify";
+  promptInput.placeholder = editing ? "edit your message" : "ask for follow-up changes";
   if (!session) {
     composerStatus.textContent = hasReadyProvider() ? "ready" : "choose a provider";
     return;
@@ -1543,6 +1865,8 @@ providerSelect.addEventListener("change", () => updateProviderFields(true));
 providerSave.addEventListener("click", saveProviderConfig);
 providerTest.addEventListener("click", testProvider);
 providerOAuth.addEventListener("click", connectOAuth);
+sessionRailToggle?.addEventListener("click", toggleSessionRail);
+sessionRailBackdrop?.addEventListener("click", closeSessionRail);
 newSessionButton.addEventListener("click", createSession);
 deleteSessionButton.addEventListener("click", () => deleteSession());
 thinkingSelect.addEventListener("change", setThinking);
@@ -1582,6 +1906,11 @@ attachmentPreviewClose?.addEventListener("click", closeAttachmentPreview);
 attachmentPreviewDialog?.addEventListener("click", (event) => {
   if (event.target === attachmentPreviewDialog) {
     closeAttachmentPreview();
+  }
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeSessionRail();
   }
 });
 
