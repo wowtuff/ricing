@@ -1,6 +1,7 @@
 package toolset
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -8,9 +9,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/widget"
 	"github.com/wowtuff/ricing/tools"
 )
 
@@ -288,49 +286,17 @@ func runWithPrivilegePrompt(ctx context.Context, operation, name string, args ..
 }
 
 func promptSudoPassword(ctx context.Context, operation string) (string, error) {
-	var password string
-	var cancelled bool
-
-	myApp := app.New()
-	w := myApp.NewWindow("password client")
-	w.SetTitle("Authentication Required")
-
-	text := widget.NewLabel(fmt.Sprintf(
-		"Authentication is required to perform:\n\n%s\n\nEnter your sudo password:",
-		operation,
-	))
-
-	passwordEntry := widget.NewPasswordEntry()
-	passwordEntry.OnSubmitted = func(_ string) {
-		password = passwordEntry.Text
-		w.Close()
+	_ = ctx
+	fmt.Printf("authentication required for %s\n", operation)
+	fmt.Print("sudo password: ")
+	reader := bufio.NewReader(os.Stdin)
+	password, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
-
-	submitBtn := widget.NewButton("OK", func() {
-		password = passwordEntry.Text
-		w.Close()
-	})
-
-	cancelBtn := widget.NewButton("Cancel", func() {
-		cancelled = true
-		w.Close()
-	})
-
-	w.SetContent(container.NewVBox(
-		text,
-		passwordEntry,
-		container.NewHBox(cancelBtn, submitBtn),
-	))
-
-	w.ShowAndRun()
-
-	if cancelled {
+	password = strings.TrimSpace(password)
+	if password == "" {
 		return "", ErrAuthCancelled
 	}
-
-	if strings.TrimSpace(password) == "" {
-		return "", ErrAuthCancelled
-	}
-
 	return password, nil
 }

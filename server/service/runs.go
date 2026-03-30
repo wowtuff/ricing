@@ -2,7 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,17 +18,19 @@ import (
 )
 
 type Run struct {
-	ID         string `json:"id"`
-	CreatedAt  string `json:"created_at"`
-	Status     string `json:"status"`
-	Mode       string `json:"mode"`
-	Prompt     string `json:"prompt,omitempty"`
-	ProviderID string `json:"provider_id"`
-	Model      string `json:"model"`
-	Backend    string `json:"backend"`
-	APIKey     string `json:"-"`
-	URL        string `json:"url"`
-	Result     *struct {
+	ID              string `json:"id"`
+	SessionID       string `json:"session_id"`
+	CreatedAt       string `json:"created_at"`
+	Status          string `json:"status"`
+	Mode            string `json:"mode"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	ProviderID      string `json:"provider_id"`
+	Model           string `json:"model"`
+	Backend         string `json:"backend"`
+	APIKey          string `json:"-"`
+	URL             string `json:"url"`
+	Result          *struct {
 		OutputText string `json:"output_text"`
 	} `json:"result,omitempty"`
 	Error *struct {
@@ -31,20 +40,23 @@ type Run struct {
 }
 
 type CreateRun struct {
-	Prompt     string
-	Mode       string
-	ProviderID string
-	Model      string
-	APIKey     string
-	URL        string
+	SessionID       string
+	Prompt          string
+	Mode            string
+	ReasoningEffort string
+	ProviderID      string
+	Model           string
+	APIKey          string
+	URL             string
 }
 
 type runState struct {
-	mu     sync.Mutex
-	run    Run
-	hub    *RunHub
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu               sync.Mutex
+	run              Run
+	hub              *RunHub
+	ctx              context.Context
+	cancel           context.CancelFunc
+	assistantEntryID string
 }
 
 type RunService struct {
@@ -52,19 +64,25 @@ type RunService struct {
 	runs      map[string]*runState
 	reg       *tools.Registry
 	providers *ProviderService
+	sessions  *SessionService
 }
 
-func NewRunService(reg *tools.Registry, providers *ProviderService) *RunService {
+func NewRunService(reg *tools.Registry, providers *ProviderService, sessions *SessionService) *RunService {
 	return &RunService{
 		runs:      make(map[string]*runState),
 		reg:       reg,
 		providers: providers,
+		sessions:  sessions,
 	}
 }
 
 func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
+	sessionSnapshot, sessionReq, err := s.ensureSession(req)
+	if err != nil {
+		return Run{}, err
+	}
+	req = sessionReq
 	hasCreds := req.APIKey != "" || req.URL != ""
-
 	if !hasCreds {
 		if req.ProviderID == "" {
 			req.ProviderID = s.providers.DefaultID()
@@ -73,51 +91,95 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 			return Run{}, ErrProviderNotConnected
 		}
 	}
-
-	if req.Mode == "" {
-		req.Mode = "auto"
-	}
 	if req.Model == "" {
-		req.Model = "gpt-5.2-codex"
+		req.Model = firstNonEmptyString(sessionSnapshot.Session.Model, "gpt-5.2-codex")
 	}
-
-	runID := newID("run")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-
+	if req.Mode == "" {
+		req.Mode = firstNonEmptyString(sessionSnapshot.Session.Mode, "auto")
+	}
+	req.ReasoningEffort = firstNonEmptyString(normalizeThinkingEffort(req.ReasoningEffort), sessionSnapshot.Session.Thinking)
 	backend := s.providers.BackendForProvider(req.ProviderID)
 	if backend == "" {
-		backend = req.ProviderID 
-
+		backend = req.ProviderID
 	}
-
-	r := Run{
-		ID:         runID,
-		CreatedAt:  now,
-		Status:     "queued",
-		Mode:       req.Mode,
-		Prompt:     req.Prompt,
-		ProviderID: req.ProviderID,
-		Model:      req.Model,
-		Backend:    backend,
-		APIKey:     req.APIKey,
-		URL:        req.URL,
-		LatestSeq:  0,
+	runID := newID("run")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	run := Run{
+		ID:              runID,
+		SessionID:       sessionSnapshot.Session.ID,
+		CreatedAt:       now,
+		Status:          "queued",
+		Mode:            req.Mode,
+		ReasoningEffort: req.ReasoningEffort,
+		Prompt:          req.Prompt,
+		ProviderID:      req.ProviderID,
+		Model:           req.Model,
+		Backend:         backend,
+		APIKey:          req.APIKey,
+		URL:             req.URL,
 	}
-
-	hub := NewRunHub(runID, 2048)
-
+	if _, err := s.sessions.CreateEntry(run.SessionID, SessionEntry{
+		RunID:   runID,
+		Kind:    "user_message",
+		Role:    "user",
+		Status:  "done",
+		Content: req.Prompt,
+	}); err != nil {
+		return Run{}, err
+	}
+	// Runs should live beyond the request that created them and stop only when
+	// the user explicitly cancels them.
+	_ = ctx
 	ctx2, cancel := context.WithCancel(context.Background())
-	st := &runState{run: r, hub: hub, ctx: ctx2, cancel: cancel}
-
+	st := &runState{
+		run:    run,
+		hub:    NewRunHub(runID, 2048),
+		ctx:    ctx2,
+		cancel: cancel,
+	}
+	_, _ = s.sessions.SetRunConfig(run.SessionID, run.ProviderID, run.Model, run.ReasoningEffort)
 	s.mu.Lock()
 	s.runs[runID] = st
 	s.mu.Unlock()
-
-	st.publish("run.status", map[string]any{"status": "queued", "stage": req.Mode})
-
+	st.publish("run.status", map[string]any{"status": "queued", "stage": req.Mode, "session_id": run.SessionID})
+	_ = s.sessions.SetStatus(run.SessionID, "queued")
 	go s.execute(st)
-
 	return st.snapshot(), nil
+}
+
+func (s *RunService) ensureSession(req CreateRun) (SessionSnapshot, CreateRun, error) {
+	if req.SessionID != "" {
+		snapshot, ok := s.sessions.Get(req.SessionID)
+		if !ok {
+			return SessionSnapshot{}, req, errors.New("session not found")
+		}
+		if req.Mode == "" {
+			req.Mode = snapshot.Session.Mode
+		}
+		if req.ReasoningEffort == "" {
+			req.ReasoningEffort = snapshot.Session.Thinking
+		}
+		if req.ProviderID == "" {
+			req.ProviderID = snapshot.Session.ProviderID
+		}
+		if req.Model == "" {
+			req.Model = snapshot.Session.Model
+		}
+		return snapshot, req, nil
+	}
+	session, err := s.sessions.Create(CreateSession{
+		Title:      req.Prompt,
+		Mode:       req.Mode,
+		Thinking:   req.ReasoningEffort,
+		ProviderID: req.ProviderID,
+		Model:      req.Model,
+	})
+	if err != nil {
+		return SessionSnapshot{}, req, err
+	}
+	req.SessionID = session.ID
+	snapshot, _ := s.sessions.Get(session.ID)
+	return snapshot, req, nil
 }
 
 func (s *RunService) Get(id string) (Run, bool) {
@@ -153,18 +215,37 @@ func (s *RunService) Hub(id string) (*RunHub, bool) {
 
 func (s *RunService) execute(st *runState) {
 	st.setStatus("running")
-	st.publish("run.status", map[string]any{"status": "running", "stage": st.run.Mode})
-
+	st.publish("run.status", map[string]any{"status": "running", "stage": st.run.Mode, "session_id": st.run.SessionID})
+	_ = s.sessions.SetStatus(st.run.SessionID, "running")
+	assistantEntry, entryErr := s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+		RunID:   st.run.ID,
+		Kind:    "assistant_message",
+		Role:    "assistant",
+		Status:  "streaming",
+		Content: "",
+	})
+	if entryErr != nil {
+		st.setError(entryErr.Error())
+		st.setStatus("failed")
+		st.publish("error", map[string]any{"code": "session_entry_failed", "message": entryErr.Error()})
+		_ = s.sessions.SetStatus(st.run.SessionID, "failed")
+		return
+	}
+	st.assistantEntryID = assistantEntry.ID
 	var output string
+	prompt, images := s.buildInput(st)
 	err := agent.RunStream(st.ctx, s.reg, agent.RunOptions{
-		Model:   st.run.Model,
-		Backend: st.run.Backend,
-		APIKey:  st.run.APIKey,
-		URL:     st.run.URL,
-	}, st.run.Prompt, agent.StreamSink{
+		Model:           st.run.Model,
+		Backend:         st.run.Backend,
+		ReasoningEffort: st.run.ReasoningEffort,
+		APIKey:          st.run.APIKey,
+		URL:             st.run.URL,
+		Images:          images,
+	}, prompt, agent.StreamSink{
 		OnDelta: func(text string) {
 			st.appendDelta(text)
-			st.publish("assistant.delta", map[string]any{"text": text})
+			_, _ = s.sessions.AppendEntryContent(st.run.SessionID, st.assistantEntryID, text)
+			st.publish("assistant.delta", map[string]any{"text": text, "session_id": st.run.SessionID})
 		},
 		OnToolCall: func(call agent.StreamToolCall) {
 			st.publish("tool.call", map[string]any{
@@ -172,6 +253,7 @@ func (s *RunService) execute(st *runState) {
 				"call_id":      call.CallID,
 				"name":         call.Name,
 				"arguments":    call.Arguments,
+				"session_id":   st.run.SessionID,
 			})
 		},
 		OnToolResult: func(res agent.ToolResult) {
@@ -179,34 +261,425 @@ func (s *RunService) execute(st *runState) {
 				"tool_call_id": res.ToolCallID,
 				"call_id":      res.CallID,
 				"output":       res.Output,
+				"session_id":   st.run.SessionID,
 			})
+		},
+		ExecuteTool: func(ctx context.Context, call agent.StreamToolCall) (agent.ToolResult, error) {
+			return s.executeTool(ctx, st, call)
 		},
 	})
 	if err == nil {
 		output = st.getOutput()
 	}
-
 	select {
 	case <-st.ctx.Done():
 		st.setStatus("cancelled")
-		st.publish("run.status", map[string]any{"status": "cancelled"})
-		st.publish("run.completed", map[string]any{"status": "cancelled"})
+		st.publish("run.status", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+		st.publish("run.completed", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+		_, _ = s.sessions.UpdateEntry(st.run.SessionID, st.assistantEntryID, func(entry *SessionEntry) {
+			entry.Status = "cancelled"
+		})
+		_ = s.sessions.SetStatus(st.run.SessionID, "cancelled")
 		return
 	default:
 	}
-
 	if err != nil {
 		st.setError(err.Error())
 		st.setStatus("failed")
-		st.publish("error", map[string]any{"code": "run_failed", "message": err.Error()})
-		st.publish("run.completed", map[string]any{"status": "failed"})
+		st.publish("error", map[string]any{"code": "run_failed", "message": err.Error(), "session_id": st.run.SessionID})
+		st.publish("run.completed", map[string]any{"status": "failed", "session_id": st.run.SessionID})
+		_, _ = s.sessions.UpdateEntry(st.run.SessionID, st.assistantEntryID, func(entry *SessionEntry) {
+			entry.Status = "failed"
+			if entry.Content == "" {
+				entry.Content = err.Error()
+			}
+		})
+		_ = s.sessions.SetStatus(st.run.SessionID, "failed")
 		return
 	}
-
 	st.setResult(output)
 	st.setStatus("succeeded")
-	st.publish("assistant.message", map[string]any{"format": "text", "text": output})
-	st.publish("run.completed", map[string]any{"status": "succeeded", "result": map[string]any{"output_text": output}})
+	st.publish("assistant.message", map[string]any{"format": "text", "text": output, "session_id": st.run.SessionID})
+	st.publish("run.completed", map[string]any{"status": "succeeded", "result": map[string]any{"output_text": output}, "session_id": st.run.SessionID})
+	_, _ = s.sessions.UpdateEntry(st.run.SessionID, st.assistantEntryID, func(entry *SessionEntry) {
+		entry.Status = "done"
+	})
+	_ = s.sessions.SetStatus(st.run.SessionID, "idle")
+}
+
+func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.StreamToolCall) (agent.ToolResult, error) {
+	if call.Name == "update_plan" {
+		entry, err := s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "plan",
+			Status:  "done",
+			Title:   firstNonEmptyString(asString(call.Arguments["summary"]), "plan"),
+			Content: renderPlan(call.Arguments),
+			Meta:    cloneMap(call.Arguments),
+		})
+		if err != nil {
+			return agent.ToolResult{}, err
+		}
+		return agent.ToolResult{
+			ToolCallID: call.ID,
+			CallID:     call.CallID,
+			Output: map[string]any{
+				"ok":       true,
+				"entry_id": entry.ID,
+			},
+		}, nil
+	}
+	if call.Name == "request_user_input" {
+		return s.requestUserInput(ctx, st, call)
+	}
+	toolCallEntry, err := s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+		RunID:   st.run.ID,
+		Kind:    "tool_call",
+		Status:  "done",
+		Title:   call.Name,
+		Content: summarizeToolCall(call),
+		Meta:    cloneMap(call.Arguments),
+	})
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	if st.run.Mode == "plan" && isMutatingCall(call) {
+		blocked := map[string]any{"ok": false, "blocked": true, "reason": "mutating tools are disabled in plan mode"}
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "system",
+			Status:  "done",
+			Title:   "plan mode",
+			Content: "mutating action blocked while the session is in plan mode",
+			Meta: map[string]any{
+				"tool_name": call.Name,
+				"entry_id":  toolCallEntry.ID,
+			},
+		})
+		return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
+	}
+	if modeNeedsApproval(st.run.Mode, call) {
+		approval, err := s.sessions.CreateApproval(st.run.SessionID, st.run.ID, toolCallEntry.ID, call.Name, summarizeToolCall(call), cloneMap(call.Arguments))
+		if err != nil {
+			return agent.ToolResult{}, err
+		}
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "approval",
+			Status:  "pending",
+			Title:   approval.ToolName,
+			Content: approval.Summary,
+			Meta: map[string]any{
+				"approval_id": approval.ID,
+			},
+		})
+		resolution, err := s.sessions.WaitForApproval(ctx, approval.ID)
+		if err != nil {
+			return agent.ToolResult{}, err
+		}
+		if resolution.Status != "approved" {
+			_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+				RunID:   st.run.ID,
+				Kind:    "approval",
+				Status:  "rejected",
+				Title:   approval.ToolName,
+				Content: firstNonEmptyString(resolution.Note, "user rejected the action"),
+				Meta: map[string]any{
+					"approval_id": approval.ID,
+				},
+			})
+			blocked := map[string]any{"ok": false, "rejected": true, "reason": firstNonEmptyString(resolution.Note, "user rejected the action")}
+			return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
+		}
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "approval",
+			Status:  "approved",
+			Title:   approval.ToolName,
+			Content: firstNonEmptyString(resolution.Note, "action approved"),
+			Meta: map[string]any{
+				"approval_id": approval.ID,
+			},
+		})
+	}
+	output, err := s.runTool(ctx, call)
+	if err != nil {
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "tool_result",
+			Status:  "failed",
+			Title:   call.Name,
+			Content: err.Error(),
+		})
+		return agent.ToolResult{}, err
+	}
+	_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+		RunID:   st.run.ID,
+		Kind:    "tool_result",
+		Status:  "done",
+		Title:   call.Name,
+		Content: formatToolOutput(output),
+		Meta: map[string]any{
+			"tool_call_entry_id": toolCallEntry.ID,
+		},
+	})
+	if change := describeChange(call, output); change != "" {
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "change",
+			Status:  "done",
+			Title:   "change",
+			Content: change,
+		})
+	}
+	if verify := describeVerification(call, output); verify != "" {
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "verification",
+			Status:  "done",
+			Title:   "verification",
+			Content: verify,
+		})
+	}
+	return agent.ToolResult{
+		ToolCallID: call.ID,
+		CallID:     call.CallID,
+		Output:     output,
+	}, nil
+}
+
+func (s *RunService) runTool(ctx context.Context, call agent.StreamToolCall) (map[string]any, error) {
+	tool, err := s.reg.Get(call.Name)
+	if err != nil {
+		return nil, err
+	}
+	result, err := tool.Run(ctx, cloneMap(call.Arguments))
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *RunService) requestUserInput(ctx context.Context, st *runState, call agent.StreamToolCall) (agent.ToolResult, error) {
+	question := strings.TrimSpace(asString(call.Arguments["question"]))
+	if question == "" {
+		return agent.ToolResult{}, fmt.Errorf("request_user_input requires a question")
+	}
+	options := questionOptionsFromMeta(call.Arguments["options"])
+	if len(options) < 2 {
+		return agent.ToolResult{}, fmt.Errorf("request_user_input requires at least two options")
+	}
+	meta := cloneMap(call.Arguments)
+	normalizedOptions := make([]any, 0, len(options))
+	for _, option := range options {
+		normalizedOptions = append(normalizedOptions, map[string]any{
+			"id":          option.ID,
+			"label":       option.Label,
+			"description": option.Description,
+		})
+	}
+	meta["options"] = normalizedOptions
+	meta["question_id"] = newID("question")
+	entry, err := s.sessions.CreateQuestion(st.run.SessionID, SessionEntry{
+		RunID:   st.run.ID,
+		Kind:    "question",
+		Status:  "pending",
+		Title:   firstNonEmptyString(asString(call.Arguments["header"]), "question"),
+		Content: question,
+		Meta:    meta,
+	})
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	answer, err := s.sessions.WaitForQuestion(ctx, questionIDFromMeta(entry.Meta))
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	return agent.ToolResult{
+		ToolCallID: call.ID,
+		CallID:     call.CallID,
+		Output: map[string]any{
+			"ok":          true,
+			"entry_id":    entry.ID,
+			"question_id": answer.QuestionID,
+			"option_id":   answer.OptionID,
+			"label":       answer.Label,
+			"description": answer.Description,
+			"answer":      answer.Answer,
+		},
+	}, nil
+}
+
+func (s *RunService) buildInput(st *runState) (string, []agent.ImageInput) {
+	snapshot, ok := s.sessions.Get(st.run.SessionID)
+	if !ok {
+		return st.run.Prompt, nil
+	}
+	parts := []string{modePrompt(st.run.Mode)}
+	history := renderConversationHistory(snapshot.Entries, st.run.ID)
+	if history != "" {
+		parts = append(parts, "conversation so far:\n"+history)
+	}
+	attachmentContext := renderAttachmentContext(snapshot.Attachments)
+	if attachmentContext != "" {
+		parts = append(parts, attachmentContext)
+	}
+	parts = append(parts, "latest user request:\n"+st.run.Prompt)
+	return strings.Join(parts, "\n\n"), imageInputsFromAttachments(snapshot.Attachments, st.run.Backend)
+}
+
+func modePrompt(mode string) string {
+	switch mode {
+	case "plan":
+		return "You are in plan mode. Do not perform mutating actions. Use update_plan before finalizing a plan. Use request_user_input when a short structured user choice would unblock planning."
+	case "build":
+		return "You are in build mode. You may use tools, but mutating actions can require approval. Use update_plan when the work benefits from a visible plan. Use request_user_input when a concise multiple-choice question would help you proceed."
+	case "full":
+		return "You are in full permission mode. You may use tools freely, including mutating actions, without waiting for approval prompts. Stay careful, explain significant changes clearly, and use update_plan when it helps the user follow the work."
+	default:
+		return "You are in auto mode. Use update_plan when it helps the user follow the work. Prefer read-only inspection before mutating actions. Use request_user_input when a short structured user choice would unblock the task."
+	}
+}
+
+func renderAttachmentContext(attachments []Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("available attachments:")
+	for _, attachment := range attachments {
+		builder.WriteString("\n- ")
+		builder.WriteString(attachment.Name)
+		content := readAttachmentSnippet(attachment.Path, attachment.Size)
+		if content != "" {
+			builder.WriteString("\n```")
+			builder.WriteString("\n")
+			builder.WriteString(content)
+			builder.WriteString("\n```")
+		}
+	}
+	return builder.String()
+}
+
+func renderConversationHistory(entries []SessionEntry, currentRunID string) string {
+	relevant := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.RunID == currentRunID {
+			continue
+		}
+		switch entry.Kind {
+		case "user_message":
+			text := strings.TrimSpace(entry.Content)
+			if text != "" {
+				relevant = append(relevant, "user: "+text)
+			}
+		case "assistant_message":
+			text := strings.TrimSpace(entry.Content)
+			if text != "" {
+				relevant = append(relevant, "assistant: "+text)
+			}
+		case "question":
+			question := strings.TrimSpace(entry.Content)
+			if question != "" {
+				relevant = append(relevant, "assistant: "+question)
+			}
+			answer := strings.TrimSpace(questionAnswerText(entry.Meta))
+			if answer != "" {
+				relevant = append(relevant, "user: "+answer)
+			}
+		}
+	}
+	if len(relevant) == 0 {
+		return ""
+	}
+	if len(relevant) > 24 {
+		relevant = relevant[len(relevant)-24:]
+	}
+	history := strings.Join(relevant, "\n\n")
+	runes := []rune(history)
+	if len(runes) > 12000 {
+		history = string(runes[len(runes)-12000:])
+	}
+	return strings.TrimSpace(history)
+}
+
+func questionAnswerText(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	answerMap, ok := meta["answer"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(firstNonEmptyString(
+		asString(answerMap["answer"]),
+		asString(answerMap["label"]),
+	))
+}
+
+func imageInputsFromAttachments(attachments []Attachment, backend string) []agent.ImageInput {
+	if !supportsImageInputs(backend) {
+		return nil
+	}
+	out := make([]agent.ImageInput, 0, len(attachments))
+	for _, attachment := range attachments {
+		image, ok := attachmentImageInput(attachment)
+		if ok {
+			out = append(out, image)
+		}
+	}
+	return out
+}
+
+func supportsImageInputs(backend string) bool {
+	switch backend {
+	case "chatgpt", "openai", "openrouter":
+		return true
+	default:
+		return false
+	}
+}
+
+func attachmentImageInput(attachment Attachment) (agent.ImageInput, bool) {
+	if attachment.Size <= 0 || attachment.Size > 8<<20 {
+		return agent.ImageInput{}, false
+	}
+	data, err := os.ReadFile(attachment.Path)
+	if err != nil || len(data) == 0 {
+		return agent.ImageInput{}, false
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		return agent.ImageInput{}, false
+	}
+	return agent.ImageInput{
+		URL:    "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data),
+		Detail: "auto",
+	}, true
+}
+
+func readAttachmentSnippet(path string, size int64) string {
+	if size > 16384 {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".pdf", ".zip", ".gz":
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) > 2000 {
+		return string(runes[:2000])
+	}
+	return text
 }
 
 func (st *runState) publish(typ string, data any) {
@@ -264,3 +737,132 @@ func (st *runState) getOutput() string {
 	return st.run.Result.OutputText
 }
 
+func cloneMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func asString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+func renderPlan(args map[string]any) string {
+	summary := strings.TrimSpace(asString(args["summary"]))
+	lines := []string{}
+	if summary != "" && summary != "<nil>" {
+		lines = append(lines, summary)
+	}
+	if rawSteps, ok := args["steps"].([]interface{}); ok {
+		for _, rawStep := range rawSteps {
+			stepMap, ok := rawStep.(map[string]any)
+			if !ok {
+				continue
+			}
+			title := strings.TrimSpace(asString(stepMap["title"]))
+			status := strings.TrimSpace(asString(stepMap["status"]))
+			if title == "" || title == "<nil>" {
+				continue
+			}
+			if status != "" && status != "<nil>" {
+				lines = append(lines, "- ["+status+"] "+title)
+			} else {
+				lines = append(lines, "- "+title)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func summarizeToolCall(call agent.StreamToolCall) string {
+	payload, _ := json.Marshal(call.Arguments)
+	return call.Name + " " + string(payload)
+}
+
+func formatToolOutput(output map[string]any) string {
+	data, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", output)
+	}
+	return string(data)
+}
+
+func isMutatingCall(call agent.StreamToolCall) bool {
+	switch call.Name {
+	case "apply_patch", "install_package", "set_color_mode":
+		return true
+	case "cmd":
+		command := strings.ToLower(strings.TrimSpace(asString(call.Arguments["command"])))
+		if command == "" {
+			return true
+		}
+		switch command {
+		case "ls", "pwd", "cat", "find", "rg", "grep", "head", "tail", "wc", "echo":
+			return false
+		case "git":
+			args, _ := call.Arguments["args"].([]interface{})
+			if len(args) == 0 {
+				return true
+			}
+			sub := strings.ToLower(strings.TrimSpace(asString(args[0])))
+			return sub != "status" && sub != "diff" && sub != "show" && sub != "log"
+		default:
+			return true
+		}
+	default:
+		return false
+	}
+}
+
+func needsApproval(call agent.StreamToolCall) bool {
+	return isMutatingCall(call)
+}
+
+func modeNeedsApproval(mode string, call agent.StreamToolCall) bool {
+	if mode == "full" {
+		return false
+	}
+	return needsApproval(call)
+}
+
+func describeChange(call agent.StreamToolCall, output map[string]any) string {
+	switch call.Name {
+	case "apply_patch":
+		return fmt.Sprintf("updated %s", asString(output["file_path"]))
+	case "install_package":
+		return "package installation attempted"
+	case "set_color_mode":
+		return fmt.Sprintf("color mode set to %s", asString(output["mode"]))
+	case "cmd":
+		if isMutatingCall(call) {
+			return "executed mutating command"
+		}
+	}
+	return ""
+}
+
+func describeVerification(call agent.StreamToolCall, output map[string]any) string {
+	if call.Name != "cmd" {
+		return ""
+	}
+	command := strings.ToLower(strings.TrimSpace(asString(call.Arguments["command"])))
+	switch command {
+	case "go", "npm", "pnpm", "yarn", "pytest", "cargo":
+		status := strings.TrimSpace(asString(output["status"]))
+		if status == "" || status == "<nil>" {
+			status = "unknown"
+		}
+		return "verification command finished with " + status
+	}
+	return ""
+}

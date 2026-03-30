@@ -64,7 +64,11 @@ func (s *ProviderService) Types() []ProviderType {
 	return []ProviderType{
 		{Type: "openai_oauth_codex", Label: "OpenAI OAuth (Codex WS)", Auth: "oauth_pkce_local_callback", Streaming: true},
 		{Type: "openai_api_key", Label: "OpenAI API Key", Auth: "api_key", Streaming: true},
+		{Type: "openrouter", Label: "OpenRouter", Auth: "api_key", Streaming: true},
+		{Type: "anthropic", Label: "Anthropic", Auth: "api_key", Streaming: true},
+		{Type: "gemini", Label: "Google Gemini", Auth: "api_key", Streaming: true},
 		{Type: "ollama", Label: "Ollama", Auth: "none", Streaming: true},
+		{Type: "lmstudio", Label: "LM Studio", Auth: "none", Streaming: true},
 	}
 }
 
@@ -153,6 +157,10 @@ func (s *ProviderService) Connect(ctx context.Context, id string, openBrowser bo
 		s.mu.Unlock()
 		return Provider{}, "", fmt.Errorf("provider is busy")
 	}
+	if p.Type != "openai_oauth_codex" {
+		s.mu.Unlock()
+		return Provider{}, "", fmt.Errorf("this provider uses client-side credentials")
+	}
 	s.busy[id] = true
 	p.State = "connecting"
 	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -193,12 +201,13 @@ func (s *ProviderService) Connect(ctx context.Context, id string, openBrowser bo
 }
 
 // Ping fires a test prompt against a provider and returns the AI's reply.
-func (s *ProviderService) Ping(ctx context.Context, id string, model string, apiKey string, url string) (string, error) {
+func (s *ProviderService) Ping(ctx context.Context, id string, model string, apiKey string, url string, reasoningEffort string) (string, error) {
 	return agent.Ping(ctx, agent.RunOptions{
-		Backend: id,
-		Model:   model,
-		APIKey:  apiKey,
-		URL:     url,
+		Backend:         id,
+		Model:           model,
+		ReasoningEffort: reasoningEffort,
+		APIKey:          apiKey,
+		URL:             url,
 	})
 }
 
@@ -236,22 +245,37 @@ func (s *ProviderService) BackendForProvider(id string) string {
 		return "chatgpt"
 	case "openai_api_key":
 		return "openai"
+	case "openrouter":
+		return "openrouter"
+	case "anthropic":
+		return "anthropic"
+	case "gemini":
+		return "gemini"
 	case "ollama":
 		return "ollama"
+	case "lmstudio":
+		return "lmstudio"
 	default:
 		return p.Type
 	}
 }
 
 func (s *ProviderService) refreshLocked(p *Provider) {
-	connected := agent.HasCachedToken()
-	if connected {
-		p.State = "connected"
-		p.HasCredentials = true
-		return
+	switch p.Type {
+	case "openai_oauth_codex":
+		if agent.HasCachedToken() {
+			p.State = "connected"
+			p.HasCredentials = true
+			return
+		}
+		if p.State != "connecting" {
+			p.State = "disconnected"
+		}
+		p.HasCredentials = false
+	default:
+		if p.State != "connecting" {
+			p.State = "disconnected"
+		}
+		p.HasCredentials = false
 	}
-	if p.State != "connecting" {
-		p.State = "disconnected"
-	}
-	p.HasCredentials = false
 }

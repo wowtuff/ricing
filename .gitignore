@@ -3,9 +3,6 @@ bruh.pub
 .gitignore
 .env
 
-# old unused ui
-server/cmd/server/
-
 # compiled binaries
 *.exe
 *.exe~

@@ -13,10 +13,12 @@ import (
 
 // runoptions carries per-run overrides — backend selection, model, and credentials.
 type RunOptions struct {
-	Model   string
-	Backend string
-	APIKey  string
-	URL     string
+	Model           string
+	Backend         string
+	ReasoningEffort string
+	APIKey          string
+	URL             string
+	Images          []ImageInput
 }
 
 // streamtoolcall is a tool invocation surfaced to the caller mid-stream.
@@ -41,6 +43,7 @@ type StreamSink struct {
 	OnDelta      func(text string)
 	OnToolCall   func(call StreamToolCall)
 	OnToolResult func(res ToolResult)
+	ExecuteTool  func(ctx context.Context, call StreamToolCall) (ToolResult, error)
 }
 
 // runstream is the streaming entry point routes to the chatgpt websocket path or the generic rest path depending on the backend in opts
@@ -95,17 +98,28 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 	}
 	toolSpecs := buildWSToolSpecs(regList)
 	var previousResponseID *string
+	content := []wsContent{}
+	if userPrompt != "" {
+		content = append(content, wsContent{Type: "input_text", Text: userPrompt})
+	}
+	for _, image := range opts.Images {
+		content = append(content, wsContent{
+			Type:     "input_image",
+			ImageURL: image.URL,
+			Detail:   image.Detail,
+		})
+	}
 	input := []wsInput{{
 		Type:    "message",
 		Role:    "user",
-		Content: []wsContent{{Type: "input_text", Text: userPrompt}},
+		Content: content,
 	}}
 
 	for {
 		req := wsRequest{
 			Type:               "response.create",
 			Model:              model,
-			Instructions:       "You are a smart agent, you provide solutions to user prompts, with no outside knowledge but from the toolset provided to you",
+			Instructions:       defaultInstructions(len(opts.Images) > 0),
 			PreviousResponseID: previousResponseID,
 			Input:              input,
 			Tools:              toolSpecs,
@@ -114,6 +128,9 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 			Store:              false,
 			Stream:             true,
 			Include:            []string{},
+		}
+		if effort := normalizeReasoningEffort(opts.ReasoningEffort); effort != "" && reasoningEffortSupported(model) {
+			req.Reasoning = &wsReasoning{Effort: effort}
 		}
 
 		if err := conn.WriteJSON(req); err != nil {
@@ -166,14 +183,13 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 		for _, tc := range pendingToolCalls {
 			var args map[string]any
 			_ = json.Unmarshal([]byte(tc.Arguments), &args)
+			call := StreamToolCall{ID: tc.ID, CallID: tc.CallID, Name: tc.Name, Arguments: args}
 			if sink.OnToolCall != nil {
-				sink.OnToolCall(StreamToolCall{ID: tc.ID, CallID: tc.CallID, Name: tc.Name, Arguments: args})
+				sink.OnToolCall(call)
 			}
-			resultJSON := executeToolByName(ctx, reg, ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments})
-			var out any
-			_ = json.Unmarshal([]byte(resultJSON), &out)
+			res, resultJSON := executeStreamTool(ctx, reg, call, tc.Arguments, sink)
 			if sink.OnToolResult != nil {
-				sink.OnToolResult(ToolResult{ToolCallID: tc.ID, CallID: tc.CallID, Output: out})
+				sink.OnToolResult(res)
 			}
 			input = append(input, wsInput{Type: "function_call_output", CallID: tc.CallID, Output: resultJSON})
 		}
@@ -184,10 +200,11 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 // runstreamrest handles the agentic loop for all non-chatgpt backends, it calls Complete in a loop, forwarding deltas and tool calls to the sink
 func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, userPrompt string, sink StreamSink) error {
 	cfg := Config{
-		Backend: opts.Backend,
-		Model:   opts.Model,
-		APIKey:  opts.APIKey,
-		URL:     opts.URL,
+		Backend:         opts.Backend,
+		Model:           opts.Model,
+		ReasoningEffort: opts.ReasoningEffort,
+		APIKey:          opts.APIKey,
+		URL:             opts.URL,
 	}
 
 	var backend Backend
@@ -195,17 +212,17 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 
 	switch cfg.Backend {
 	case "openai":
-		backend, err = restBackendFn("https://api.openai.com/v1", cfg.Model, cfg.APIKey)
+		backend, err = restBackendFn("https://api.openai.com/v1", cfg.Model, cfg.APIKey, cfg.ReasoningEffort)
 	case "anthropic":
 		backend, err = anthropic(cfg.Model, cfg.APIKey)
 	case "gemini":
 		backend, err = gemini(cfg.Model, cfg.APIKey)
 	case "openrouter":
-		backend, err = restBackendFn("https://openrouter.ai/api/v1", cfg.Model, cfg.APIKey)
+		backend, err = restBackendFn("https://openrouter.ai/api/v1", cfg.Model, cfg.APIKey, cfg.ReasoningEffort)
 	case "ollama", "lmstudio", "local":
-		backend, err = restBackendFn(cfg.URL, cfg.Model, "")
+		backend, err = restBackendFn(cfg.URL, cfg.Model, "", "")
 	default:
-		backend, err = restBackendFn(cfg.URL, cfg.Model, cfg.APIKey)
+		backend, err = restBackendFn(cfg.URL, cfg.Model, cfg.APIKey, cfg.ReasoningEffort)
 	}
 
 	if err != nil {
@@ -216,7 +233,11 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 	if reg != nil {
 		specs = reg.List()
 	}
-	messages := []Message{{Role: "user", Content: userPrompt}}
+	messages := make([]Message, 0, 2)
+	if len(opts.Images) > 0 {
+		messages = append(messages, Message{Role: "system", Content: defaultInstructions(true)})
+	}
+	messages = append(messages, Message{Role: "user", Content: userPrompt, Images: opts.Images})
 
 	for {
 		result, err := backend.Complete(ctx, messages, specs)
@@ -224,7 +245,7 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 			return err
 		}
 
-		if result.Content != "" {
+		if result.Content != "" && sink.OnDelta != nil {
 			sink.OnDelta(result.Content)
 		}
 
@@ -233,18 +254,15 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 		}
 
 		for _, tc := range result.ToolCalls {
+			var args map[string]any
+			_ = json.Unmarshal([]byte(tc.Arguments), &args)
+			call := StreamToolCall{ID: tc.ID, CallID: tc.ID, Name: tc.Name, Arguments: args}
 			if sink.OnToolCall != nil {
-				var args map[string]any
-				json.Unmarshal([]byte(tc.Arguments), &args)
-				sink.OnToolCall(StreamToolCall{ID: tc.ID, CallID: tc.ID, Name: tc.Name, Arguments: args})
+				sink.OnToolCall(call)
 			}
-
-			output := executeToolByName(ctx, reg, tc)
-			var out any
-			json.Unmarshal([]byte(output), &out)
-
+			res, output := executeStreamTool(ctx, reg, call, tc.Arguments, sink)
 			if sink.OnToolResult != nil {
-				sink.OnToolResult(ToolResult{ToolCallID: tc.ID, CallID: tc.ID, Output: out})
+				sink.OnToolResult(res)
 			}
 
 			messages = append(messages, Message{
@@ -258,4 +276,32 @@ func runStreamREST(ctx context.Context, reg *tools.Registry, opts RunOptions, us
 			})
 		}
 	}
+}
+
+func executeStreamTool(ctx context.Context, reg *tools.Registry, call StreamToolCall, rawArgs string, sink StreamSink) (ToolResult, string) {
+	if sink.ExecuteTool != nil {
+		res, err := sink.ExecuteTool(ctx, call)
+		if err != nil {
+			payload := map[string]any{"error": err.Error()}
+			resultJSON, _ := json.Marshal(payload)
+			return ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: payload}, string(resultJSON)
+		}
+		if res.ToolCallID == "" {
+			res.ToolCallID = call.ID
+		}
+		if res.CallID == "" {
+			res.CallID = call.CallID
+		}
+		resultJSON, err := json.Marshal(res.Output)
+		if err != nil {
+			payload := map[string]any{"error": err.Error()}
+			fallback, _ := json.Marshal(payload)
+			return ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: payload}, string(fallback)
+		}
+		return res, string(resultJSON)
+	}
+	resultJSON := executeToolByName(ctx, reg, ToolCall{ID: call.CallID, Name: call.Name, Arguments: rawArgs})
+	var out any
+	_ = json.Unmarshal([]byte(resultJSON), &out)
+	return ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: out}, resultJSON
 }

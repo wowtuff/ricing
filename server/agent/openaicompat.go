@@ -12,17 +12,23 @@ import (
 
 // calls any openai-compatible chat completions endpoint
 type restBackend struct {
-	baseURL string
-	model   string
-	apiKey  string
+	baseURL         string
+	model           string
+	reasoningEffort string
+	apiKey          string
 }
 
 // constructs a restBackend, refusing to proceed without an api key
-func restBackendFn(baseURL, model, apiKey string) (*restBackend, error) {
+func restBackendFn(baseURL, model, apiKey, reasoningEffort string) (*restBackend, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api_key is required for this backend")
 	}
-	return &restBackend{baseURL: baseURL, model: model, apiKey: apiKey}, nil
+	return &restBackend{
+		baseURL:         baseURL,
+		model:           model,
+		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
+		apiKey:          apiKey,
+	}, nil
 }
 
 // complete posts to /chat/completions and returns the first choice as a CompletionResult
@@ -31,6 +37,9 @@ func (b *restBackend) Complete(ctx context.Context, messages []Message, specs []
 		"model":    b.model,
 		"messages": toOpenAIMessages(messages),
 		"tools":    toOpenAITools(specs),
+	}
+	if b.reasoningEffort != "" && reasoningEffortSupported(b.model) {
+		body["reasoning_effort"] = b.reasoningEffort
 	}
 
 	data, err := json.Marshal(body)
@@ -125,6 +134,29 @@ func toOpenAIMessages(messages []Message) []map[string]any {
 				"tool_call_id": m.ToolCallID,
 			})
 		default:
+			if len(m.Images) > 0 {
+				content := make([]map[string]any, 0, len(m.Images)+1)
+				if m.Content != "" {
+					content = append(content, map[string]any{
+						"type": "text",
+						"text": m.Content,
+					})
+				}
+				for _, image := range m.Images {
+					content = append(content, map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url":    image.URL,
+							"detail": image.Detail,
+						},
+					})
+				}
+				out = append(out, map[string]any{
+					"role":    m.Role,
+					"content": content,
+				})
+				continue
+			}
 			out = append(out, map[string]any{
 				"role":    m.Role,
 				"content": m.Content,
