@@ -423,6 +423,16 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 			"tool_call_entry_id": toolCallEntry.ID,
 		},
 	})
+	if call.Name == "preview_control" {
+		_, _ = s.sessions.SetPreviewState(
+			st.run.SessionID,
+			"",
+			asString(output["profile"]),
+			asString(output["preview_url"]),
+			asString(output["status"]),
+			asBool(output["open_browser"]) || asBool(output["opened_browser"]),
+		)
+	}
 	if change := describeChange(call, output); change != "" {
 		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 			RunID:   st.run.ID,
@@ -478,8 +488,13 @@ func (s *RunService) requestUserInput(ctx context.Context, st *runState, call ag
 			"description": option.Description,
 		})
 	}
+	questionKind := ""
+	if rawKind, ok := call.Arguments["question_kind"].(string); ok {
+		questionKind = strings.TrimSpace(rawKind)
+	}
 	meta["options"] = normalizedOptions
 	meta["question_id"] = newID("question")
+	meta["question_kind"] = questionKind
 	entry, err := s.sessions.CreateQuestion(st.run.SessionID, SessionEntry{
 		RunID:   st.run.ID,
 		Kind:    "question",
@@ -520,6 +535,9 @@ func (s *RunService) buildInput(st *runState) (string, []agent.ImageInput) {
 	if history != "" {
 		parts = append(parts, "conversation so far:\n"+history)
 	}
+	if previewContext := renderPreviewContext(snapshot.Session); previewContext != "" {
+		parts = append(parts, previewContext)
+	}
 	attachmentContext := renderAttachmentContext(snapshot.Attachments)
 	if attachmentContext != "" {
 		parts = append(parts, attachmentContext)
@@ -531,14 +549,33 @@ func (s *RunService) buildInput(st *runState) (string, []agent.ImageInput) {
 func modePrompt(mode string) string {
 	switch mode {
 	case "plan":
-		return "You are in plan mode. Do not perform mutating actions. Use update_plan before finalizing a plan. Use request_user_input when a short structured user choice would unblock planning."
+		return "You are in plan mode. Do not perform mutating actions. Use update_plan before finalizing a plan. Use request_user_input when a short structured user choice would unblock planning. If the task involves desktop or UI changes and preview_preference is ask, use request_user_input with question_kind preview_preference and ask exactly: do you want to see the preview before actual system implementation?"
 	case "build":
-		return "You are in build mode. You may use tools, but mutating actions can require approval. Use update_plan when the work benefits from a visible plan. Use request_user_input when a concise multiple-choice question would help you proceed."
+		return "You are in build mode. You may use tools, but mutating actions can require approval. Use update_plan when the work benefits from a visible plan. Use request_user_input when a concise multiple-choice question would help you proceed. If the task involves desktop or UI changes and preview_preference is ask, use request_user_input with question_kind preview_preference and ask exactly: do you want to see the preview before actual system implementation? When preview_preference is enabled, prefer editing files under hyprland/, then use preview_control to build or launch the matching preview before proposing real system changes."
 	case "full":
-		return "You are in full permission mode. You may use tools freely, including mutating actions, without waiting for approval prompts. Stay careful, explain significant changes clearly, and use update_plan when it helps the user follow the work."
+		return "You are in full permission mode. You may use tools freely, including mutating actions, without waiting for approval prompts. Stay careful, explain significant changes clearly, and use update_plan when it helps the user follow the work. If the task involves desktop or UI changes and preview_preference is ask, use request_user_input with question_kind preview_preference and ask exactly: do you want to see the preview before actual system implementation? When preview_preference is enabled, prefer editing files under hyprland/, then use preview_control to build or launch the matching preview before real system implementation."
 	default:
-		return "You are in auto mode. Use update_plan when it helps the user follow the work. Prefer read-only inspection before mutating actions. Use request_user_input when a short structured user choice would unblock the task."
+		return "You are in auto mode. Use update_plan when it helps the user follow the work. Prefer read-only inspection before mutating actions. Use request_user_input when a short structured user choice would unblock the task. If the task involves desktop or UI changes and preview_preference is ask, use request_user_input with question_kind preview_preference and ask exactly: do you want to see the preview before actual system implementation? When preview_preference is enabled, prefer editing files under hyprland/, then use preview_control to build or launch the matching preview before real system implementation."
 	}
+}
+
+func renderPreviewContext(session Session) string {
+	parts := []string{}
+	preference := strings.TrimSpace(session.PreviewPreference)
+	if preference == "" {
+		preference = "ask"
+	}
+	parts = append(parts, "preview preference: "+preference)
+	if profile := strings.TrimSpace(session.PreviewProfile); profile != "" {
+		parts = append(parts, "preview profile: "+profile)
+	}
+	if status := strings.TrimSpace(session.PreviewStatus); status != "" {
+		parts = append(parts, "preview status: "+status)
+	}
+	if url := strings.TrimSpace(session.PreviewURL); url != "" {
+		parts = append(parts, "preview url: "+url)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func renderAttachmentContext(attachments []Attachment) string {
@@ -757,6 +794,19 @@ func asString(value any) string {
 	}
 }
 
+func asBool(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
 func renderPlan(args map[string]any) string {
 	summary := strings.TrimSpace(asString(args["summary"]))
 	lines := []string{}
@@ -799,8 +849,11 @@ func formatToolOutput(output map[string]any) string {
 
 func isMutatingCall(call agent.StreamToolCall) bool {
 	switch call.Name {
-	case "apply_patch", "install_package", "set_color_mode":
+	case "apply_patch", "install_package", "set_color_mode", "edit_preview_dockerfile":
 		return true
+	case "preview_control":
+		action := strings.ToLower(strings.TrimSpace(asString(call.Arguments["action"])))
+		return action != "list" && action != "status" && action != "open"
 	case "cmd":
 		command := strings.ToLower(strings.TrimSpace(asString(call.Arguments["command"])))
 		if command == "" {
@@ -843,6 +896,10 @@ func describeChange(call agent.StreamToolCall, output map[string]any) string {
 		return "package installation attempted"
 	case "set_color_mode":
 		return fmt.Sprintf("color mode set to %s", asString(output["mode"]))
+	case "preview_control":
+		return fmt.Sprintf("preview %s for %s", asString(output["status"]), asString(output["profile"]))
+	case "edit_preview_dockerfile":
+		return fmt.Sprintf("updated preview dockerfile for %s", asString(output["profile"]))
 	case "cmd":
 		if isMutatingCall(call) {
 			return "executed mutating command"
@@ -852,6 +909,9 @@ func describeChange(call agent.StreamToolCall, output map[string]any) string {
 }
 
 func describeVerification(call agent.StreamToolCall, output map[string]any) string {
+	if call.Name == "preview_control" {
+		return fmt.Sprintf("preview url %s", asString(output["preview_url"]))
+	}
 	if call.Name != "cmd" {
 		return ""
 	}

@@ -19,6 +19,10 @@ func (t RequestUserInputTool) Specs() tools.ToolSpec {
 				"header": map[string]any{
 					"type": "string",
 				},
+				"question_kind": map[string]any{
+					"type":        "string",
+					"description": "Optional semantic tag for the question, such as preview_preference.",
+				},
 				"question": map[string]any{
 					"type": "string",
 				},
@@ -50,9 +54,11 @@ func (t RequestUserInputTool) Run(ctx context.Context, args map[string]any) (map
 	_ = ctx
 	question, _ := args["question"].(string)
 	header, _ := args["header"].(string)
+	questionKind, _ := args["question_kind"].(string)
 	return map[string]any{
-		"ok":       true,
-		"header":   strings.TrimSpace(header),
-		"question": strings.TrimSpace(question),
+		"ok":            true,
+		"header":        strings.TrimSpace(header),
+		"question_kind": strings.TrimSpace(questionKind),
+		"question":      strings.TrimSpace(question),
 	}, nil
 }

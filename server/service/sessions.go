@@ -14,20 +14,25 @@ import (
 )
 
 type Session struct {
-	ID               string `json:"id"`
-	Title            string `json:"title"`
-	Mode             string `json:"mode"`
-	Thinking         string `json:"thinking,omitempty"`
-	Status           string `json:"status"`
-	ProviderID       string `json:"provider_id"`
-	Model            string `json:"model"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
-	LatestPreview    string `json:"latest_preview,omitempty"`
-	LatestEntryID    string `json:"latest_entry_id,omitempty"`
-	LatestSeq        int64  `json:"latest_seq"`
-	PendingApprovals int    `json:"pending_approvals"`
-	AttachmentCount  int    `json:"attachment_count"`
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	Mode              string `json:"mode"`
+	Thinking          string `json:"thinking,omitempty"`
+	Status            string `json:"status"`
+	ProviderID        string `json:"provider_id"`
+	Model             string `json:"model"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+	LatestPreview     string `json:"latest_preview,omitempty"`
+	LatestEntryID     string `json:"latest_entry_id,omitempty"`
+	LatestSeq         int64  `json:"latest_seq"`
+	PendingApprovals  int    `json:"pending_approvals"`
+	AttachmentCount   int    `json:"attachment_count"`
+	PreviewPreference string `json:"preview_preference,omitempty"`
+	PreviewProfile    string `json:"preview_profile,omitempty"`
+	PreviewURL        string `json:"preview_url,omitempty"`
+	PreviewStatus     string `json:"preview_status,omitempty"`
+	PreviewOpenToken  string `json:"preview_open_token,omitempty"`
 }
 
 type SessionEntry struct {
@@ -213,15 +218,16 @@ func (s *SessionService) Create(req CreateSession) (Session, error) {
 	}
 	req.Thinking = normalizeThinkingEffort(req.Thinking)
 	session := Session{
-		ID:         newID("sess"),
-		Title:      normalizeSessionTitle(req.Title),
-		Mode:       req.Mode,
-		Thinking:   req.Thinking,
-		Status:     "idle",
-		ProviderID: req.ProviderID,
-		Model:      req.Model,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:                newID("sess"),
+		Title:             normalizeSessionTitle(req.Title),
+		Mode:              req.Mode,
+		Thinking:          req.Thinking,
+		Status:            "idle",
+		ProviderID:        req.ProviderID,
+		Model:             req.Model,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		PreviewPreference: "ask",
 	}
 	if session.Title == "" {
 		session.Title = "new session"
@@ -384,6 +390,40 @@ func (s *SessionService) SetStatus(sessionID, status string) error {
 	st.mu.Unlock()
 	s.publishSessionUpdate(session, st)
 	return nil
+}
+
+func (s *SessionService) SetPreviewState(sessionID, preference, profile, url, status string, openBrowser bool) (Session, error) {
+	s.mu.Lock()
+	st, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		return Session{}, fmt.Errorf("session not found")
+	}
+	st.mu.Lock()
+	if normalized := normalizePreviewPreference(preference); normalized != "" {
+		st.snapshot.Session.PreviewPreference = normalized
+	}
+	if strings.TrimSpace(profile) != "" {
+		st.snapshot.Session.PreviewProfile = strings.TrimSpace(profile)
+	}
+	if strings.TrimSpace(url) != "" {
+		st.snapshot.Session.PreviewURL = strings.TrimSpace(url)
+	}
+	if strings.TrimSpace(status) != "" {
+		st.snapshot.Session.PreviewStatus = strings.TrimSpace(status)
+	}
+	if openBrowser {
+		st.snapshot.Session.PreviewOpenToken = newID("preview")
+	}
+	st.snapshot.Session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.saveStateLocked(st); err != nil {
+		st.mu.Unlock()
+		return Session{}, err
+	}
+	session := st.snapshot.Session
+	st.mu.Unlock()
+	s.publishSessionUpdate(session, st)
+	return session, nil
 }
 
 func (s *SessionService) CreateEntry(sessionID string, entry SessionEntry) (SessionEntry, error) {
@@ -563,6 +603,12 @@ func (s *SessionService) AnswerQuestion(sessionID, questionID, optionID string) 
 		st.snapshot.Session.UpdatedAt = now
 		st.snapshot.Session.LatestEntryID = entry.ID
 		st.snapshot.Session.LatestPreview = trimPreview(answer.Answer)
+		if questionKindFromMeta(entry.Meta) == "preview_preference" {
+			st.snapshot.Session.PreviewPreference = previewPreferenceFromOption(answer.OptionID)
+			if st.snapshot.Session.PreviewPreference == "disabled" {
+				st.snapshot.Session.PreviewStatus = "skipped"
+			}
+		}
 		if err := s.saveStateLocked(st); err != nil {
 			st.mu.Unlock()
 			return SessionEntry{}, QuestionAnswer{}, err
@@ -919,11 +965,44 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
+func normalizePreviewPreference(input string) string {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "", "unknown":
+		return ""
+	case "ask":
+		return "ask"
+	case "enabled", "preview_first", "yes", "true":
+		return "enabled"
+	case "disabled", "skip_preview", "apply_directly", "no", "false":
+		return "disabled"
+	default:
+		return ""
+	}
+}
+
+func previewPreferenceFromOption(optionID string) string {
+	switch strings.ToLower(strings.TrimSpace(optionID)) {
+	case "preview_first", "enabled", "yes", "preview", "show_preview":
+		return "enabled"
+	case "apply_directly", "disabled", "no", "skip_preview", "skip":
+		return "disabled"
+	default:
+		return "disabled"
+	}
+}
+
 func questionIDFromMeta(meta map[string]any) string {
 	if meta == nil {
 		return ""
 	}
 	return strings.TrimSpace(asString(meta["question_id"]))
+}
+
+func questionKindFromMeta(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	return strings.TrimSpace(asString(meta["question_kind"]))
 }
 
 func questionOptionsFromMeta(value any) []QuestionOption {

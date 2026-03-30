@@ -13,6 +13,8 @@ func NewDefaultRegistry() *tools.Registry {
 	reg.Register(&InstallPackageTool{})
 	reg.Register(&ReadFileTool{})
 	reg.Register(&ApplyPatchTool{})
+	reg.Register(&PreviewControlTool{})
+	reg.Register(&EditPreviewDockerfileTool{})
 	reg.Register(&SystemInfoTool{})
 	reg.Register(&ServiceLogsTool{})
 	reg.Register(&ColorModeTool{})
