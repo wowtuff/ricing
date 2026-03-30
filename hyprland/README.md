@@ -2,6 +2,7 @@
 
 - `arch-hyprland` for the original headless Hyprland preview
 - `arch-i3` for an Arch X11 i3 preview
+- `arch-gnome`, `arch-plasma`, `arch-xfce`, `arch-cinnamon`, `arch-mate`, and `arch-lxqt` for the main Arch desktop environments
 - `debian-i3` for a Debian X11 i3 preview
 - one live preview container on `localhost:5070` and `http://localhost:6090`
 - session-aware `shell`, `exec`, `refresh`, and `watch` commands
@@ -20,6 +21,8 @@ switch profiles with `--profile`:
 ```bash
 ./run.sh build --profile arch-i3
 ./run.sh up --profile arch-i3
+./run.sh build --profile arch-xfce
+./run.sh up --profile arch-xfce
 ./run.sh build --profile debian-i3
 ./run.sh up --profile debian-i3
 ```
@@ -56,6 +59,7 @@ switch profiles with `--profile`:
 
 - `arch-hyprland` uses Hyprland, `wayvnc`, and noVNC
 - `arch-i3` uses Xvfb, i3, `x11vnc`, and noVNC
+- `arch-gnome`, `arch-plasma`, `arch-xfce`, `arch-cinnamon`, `arch-mate`, and `arch-lxqt` use the shared Arch X11 preview path on Xvfb with `x11vnc` and noVNC
 - `debian-i3` uses the same X11 preview path on Debian
 
 ## troubleshooting

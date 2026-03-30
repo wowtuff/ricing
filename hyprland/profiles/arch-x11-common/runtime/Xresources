@@ -1,0 +1,15 @@
+XTerm*faceName: JetBrains Mono
+XTerm*faceSize: 10
+XTerm*termName: xterm-256color
+XTerm*saveLines: 5000
+XTerm*foreground: #e5e7eb
+XTerm*background: #111827
+XTerm*cursorColor: #7dd3fc
+XTerm*color0: #0f172a
+XTerm*color1: #ef4444
+XTerm*color2: #22c55e
+XTerm*color3: #f59e0b
+XTerm*color4: #38bdf8
+XTerm*color5: #a855f7
+XTerm*color6: #14b8a6
+XTerm*color7: #e5e7eb

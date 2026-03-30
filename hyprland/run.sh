@@ -8,6 +8,7 @@ DATA_VOL="hyprland-preview-data"
 PORT_VNC="5070"
 PORT_NOVNC="6090"
 PROFILE="arch-hyprland"
+REFRESH_MODE="refresh"
 CMD=""
 ARGS=()
 
@@ -45,10 +46,17 @@ require_cmd() {
 list_profiles() {
     echo "arch-hyprland"
     echo "arch-i3"
+    echo "arch-gnome"
+    echo "arch-plasma"
+    echo "arch-xfce"
+    echo "arch-cinnamon"
+    echo "arch-mate"
+    echo "arch-lxqt"
     echo "debian-i3"
 }
 
 set_profile() {
+    local common_arch_x11_dir="$MYDIR/profiles/arch-x11-common"
     case "$PROFILE" in
         arch-hyprland)
             IMAGE="$IMAGE_BASE-$PROFILE"
@@ -68,6 +76,7 @@ set_profile() {
             )
             RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
             BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="refresh"
             ;;
         arch-i3)
             IMAGE="$IMAGE_BASE-$PROFILE"
@@ -79,6 +88,79 @@ set_profile() {
             RUNTIME_FILES=("$MYDIR/profiles/arch-i3/runtime")
             RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
             BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="refresh"
+            ;;
+        arch-gnome)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-gnome/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-gnome/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-gnome/refresh.sh"
+            START_CMD="/workspace/profiles/arch-gnome/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-gnome/refresh.sh"
+            RUNTIME_FILES=("$common_arch_x11_dir/runtime" "$MYDIR/profiles/arch-gnome/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE" "$common_arch_x11_dir/start.sh" "$common_arch_x11_dir/refresh.sh")
+            BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="restart"
+            ;;
+        arch-plasma)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-plasma/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-plasma/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-plasma/refresh.sh"
+            START_CMD="/workspace/profiles/arch-plasma/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-plasma/refresh.sh"
+            RUNTIME_FILES=("$common_arch_x11_dir/runtime" "$MYDIR/profiles/arch-plasma/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE" "$common_arch_x11_dir/start.sh" "$common_arch_x11_dir/refresh.sh")
+            BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="restart"
+            ;;
+        arch-xfce)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-xfce/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-xfce/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-xfce/refresh.sh"
+            START_CMD="/workspace/profiles/arch-xfce/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-xfce/refresh.sh"
+            RUNTIME_FILES=("$common_arch_x11_dir/runtime" "$MYDIR/profiles/arch-xfce/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE" "$common_arch_x11_dir/start.sh" "$common_arch_x11_dir/refresh.sh")
+            BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="restart"
+            ;;
+        arch-cinnamon)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-cinnamon/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-cinnamon/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-cinnamon/refresh.sh"
+            START_CMD="/workspace/profiles/arch-cinnamon/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-cinnamon/refresh.sh"
+            RUNTIME_FILES=("$common_arch_x11_dir/runtime" "$MYDIR/profiles/arch-cinnamon/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE" "$common_arch_x11_dir/start.sh" "$common_arch_x11_dir/refresh.sh")
+            BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="restart"
+            ;;
+        arch-mate)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-mate/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-mate/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-mate/refresh.sh"
+            START_CMD="/workspace/profiles/arch-mate/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-mate/refresh.sh"
+            RUNTIME_FILES=("$common_arch_x11_dir/runtime" "$MYDIR/profiles/arch-mate/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE" "$common_arch_x11_dir/start.sh" "$common_arch_x11_dir/refresh.sh")
+            BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="restart"
+            ;;
+        arch-lxqt)
+            IMAGE="$IMAGE_BASE-$PROFILE"
+            DOCKERFILE="$MYDIR/profiles/arch-lxqt/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-lxqt/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-lxqt/refresh.sh"
+            START_CMD="/workspace/profiles/arch-lxqt/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-lxqt/refresh.sh"
+            RUNTIME_FILES=("$common_arch_x11_dir/runtime" "$MYDIR/profiles/arch-lxqt/runtime")
+            RESTART_FILES=("$START_FILE" "$REFRESH_FILE" "$common_arch_x11_dir/start.sh" "$common_arch_x11_dir/refresh.sh")
+            BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="restart"
             ;;
         debian-i3)
             IMAGE="$IMAGE_BASE-$PROFILE"
@@ -90,6 +172,7 @@ set_profile() {
             RUNTIME_FILES=("$MYDIR/profiles/debian-i3/runtime")
             RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
             BUILD_FILES=("$DOCKERFILE")
+            REFRESH_MODE="refresh"
             ;;
         *)
             echo "unknown profile: $PROFILE"
@@ -294,6 +377,10 @@ inspect_container() {
 
 refresh_container() {
     need_profile
+    if [ "$REFRESH_MODE" = "restart" ]; then
+        restart_detached
+        return
+    fi
     docker exec -u hypruser "$CONTAINER" /bin/bash "$REFRESH_CMD"
 }
 
@@ -364,7 +451,11 @@ watch_files() {
             continue
         fi
         if [ "$now_rt" != "$last_rt" ]; then
-            echo "runtime files changed, refreshing preview..."
+            if [ "$REFRESH_MODE" = "restart" ]; then
+                echo "runtime files changed, restarting preview..."
+            else
+                echo "runtime files changed, refreshing preview..."
+            fi
             refresh_container
             last_rt=$now_rt
         fi
@@ -397,8 +488,14 @@ EOF
 }
 
 main() {
-    require_cmd docker
     parse_args "$@"
+    case "${CMD:-}" in
+        list|"")
+            ;;
+        *)
+            require_cmd docker
+            ;;
+    esac
     set_profile
     case "${CMD:-}" in
         list)
