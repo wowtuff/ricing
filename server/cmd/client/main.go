@@ -188,6 +188,14 @@ func (c *client) handleCommand(line string) bool {
 		if err := c.resolveApproval(parts[1], "reject"); err != nil {
 			fmt.Printf("error: %v\n", err)
 		}
+	case "/answer":
+		if len(parts) < 3 {
+			fmt.Println("usage: /answer <question_id> <option_id>")
+			return false
+		}
+		if err := c.answerQuestion(parts[1], parts[2]); err != nil {
+			fmt.Printf("error: %v\n", err)
+		}
 	case "/files":
 		c.printFiles()
 	case "/attach":
@@ -218,6 +226,7 @@ func (c *client) printHelp() {
 	fmt.Println("  /mode <mode>       set auto, plan, or build")
 	fmt.Println("  /approve <id>      approve a pending action")
 	fmt.Println("  /reject <id>       reject a pending action")
+	fmt.Println("  /answer <q> <o>    answer a pending question")
 	fmt.Println("  /files             list files on the active session")
 	fmt.Println("  /attach <path>     add a file to the active session")
 	fmt.Println("  /stop              cancel the active run")
@@ -447,6 +456,23 @@ func (c *client) resolveApproval(approvalID, decision string) error {
 		return decodeAPIError(resp.Body)
 	}
 	fmt.Printf("%s %s\n", decision, approvalID)
+	return nil
+}
+
+func (c *client) answerQuestion(questionID, optionID string) error {
+	if c.sessionID == "" {
+		return fmt.Errorf("no active session")
+	}
+	body, _ := json.Marshal(map[string]string{"option_id": optionID})
+	resp, err := http.Post(serverURL+"/api/v1/sessions/"+c.sessionID+"/questions/"+questionID, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return decodeAPIError(resp.Body)
+	}
+	fmt.Printf("answered %s with %s\n", questionID, optionID)
 	return nil
 }
 
@@ -700,6 +726,28 @@ func (c *client) printEntry(item entry) {
 		fmt.Printf("verify: %s\n", item.Content)
 	case "approval":
 		fmt.Printf("approval: %s\n", item.Content)
+	case "question":
+		questionID := fmt.Sprintf("%v", item.Meta["question_id"])
+		fmt.Printf("question: %s\n", item.Content)
+		if options, ok := item.Meta["options"].([]any); ok {
+			for _, raw := range options {
+				optionMap, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				optionID := fmt.Sprintf("%v", optionMap["id"])
+				label := fmt.Sprintf("%v", optionMap["label"])
+				description := strings.TrimSpace(fmt.Sprintf("%v", optionMap["description"]))
+				if description != "" && description != "<nil>" {
+					fmt.Printf("  %s: %s - %s\n", optionID, label, description)
+				} else {
+					fmt.Printf("  %s: %s\n", optionID, label)
+				}
+			}
+		}
+		if questionID != "" && questionID != "<nil>" {
+			fmt.Printf("use /answer %s <option_id>\n", questionID)
+		}
 	case "system":
 		fmt.Printf("system: %s\n", item.Content)
 	}

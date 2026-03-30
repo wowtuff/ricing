@@ -17,6 +17,8 @@ const state = {
   activeSnapshot: null,
   catalogSocket: null,
   sessionSocket: null,
+  sessionSocketSessionId: "",
+  sessionSocketReady: Promise.resolve(),
   activeRunId: "",
   search: "",
   oauthProviderId: "",
@@ -26,7 +28,8 @@ const state = {
   config: loadStoredConfig(),
   localEntries: [],
   editingEntryId: "",
-  expandedActivityGroups: {}
+  expandedActivityGroups: {},
+  lastPreviewOpenToken: ""
 };
 
 const backendStatus = document.getElementById("backendStatus");
@@ -40,6 +43,7 @@ const sessionList = document.getElementById("sessionList");
 const sessionTitle = document.getElementById("sessionTitle");
 const sessionModeLabel = document.getElementById("sessionModeLabel");
 const sessionState = document.getElementById("sessionState");
+const openPreviewButton = document.getElementById("openPreviewButton");
 const deleteSessionButton = document.getElementById("deleteSessionButton");
 const thinkingSelect = document.getElementById("thinkingSelect");
 const modeSelect = document.getElementById("modeSelect");
@@ -521,11 +525,12 @@ async function selectSession(sessionId) {
   const res = await api(`/api/v1/sessions/${sessionId}`);
   const data = await res.json();
   state.activeSnapshot = data;
+  state.lastPreviewOpenToken = data.session?.preview_open_token || "";
   thinkingSelect.value = normalizeThinkingValue(data.session?.thinking || currentConfig().thinking);
   modeSelect.value = data.session?.mode || "auto";
   renderAll();
   closeSessionRail();
-  openSessionSocket(sessionId);
+  state.sessionSocketReady = openSessionSocket(sessionId);
 }
 
 function openCatalogSocket() {
@@ -562,19 +567,75 @@ function openCatalogSocket() {
 
 function openSessionSocket(sessionId) {
   if (!state.backendOnline) {
-    return;
+    state.sessionSocketReady = Promise.resolve();
+    return state.sessionSocketReady;
   }
   if (state.sessionSocket) {
     state.sessionSocket.close();
   }
+  const afterSeq = Number(state.activeSnapshot?.session?.latest_seq) || 0;
+  let resolveReady = null;
+  let settled = false;
+  const ready = new Promise((resolve) => {
+    resolveReady = resolve;
+  });
+  const settle = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    resolveReady?.();
+  };
+  const readyTimer = window.setTimeout(settle, 1500);
   const socket = new WebSocket(wsURL());
   socket.onopen = () => {
-    socket.send(JSON.stringify({ type: "subscribe", data: { session_id: sessionId, after_seq: 0 } }));
+    socket.send(JSON.stringify({ type: "subscribe", data: { session_id: sessionId, after_seq: afterSeq } }));
   };
   socket.onmessage = (event) => {
-    handleSessionMessage(JSON.parse(event.data));
+    const message = JSON.parse(event.data);
+    if (message.type === "subscribed" && message.data?.session_id === sessionId) {
+      window.clearTimeout(readyTimer);
+      settle();
+    }
+    handleSessionMessage(message);
+  };
+  socket.onerror = () => {
+    window.clearTimeout(readyTimer);
+    settle();
+  };
+  socket.onclose = () => {
+    window.clearTimeout(readyTimer);
+    settle();
+    if (state.sessionSocket === socket) {
+      state.sessionSocket = null;
+      state.sessionSocketSessionId = "";
+      state.sessionSocketReady = Promise.resolve();
+    }
   };
   state.sessionSocket = socket;
+  state.sessionSocketSessionId = sessionId;
+  state.sessionSocketReady = ready;
+  return ready;
+}
+
+async function ensureSessionSocketReady(sessionId = state.activeSessionId) {
+  if (!sessionId || !state.backendOnline) {
+    return;
+  }
+  const readyState = state.sessionSocket?.readyState;
+  const needsSocket =
+    !state.sessionSocket ||
+    state.sessionSocketSessionId !== sessionId ||
+    readyState === WebSocket.CLOSING ||
+    readyState === WebSocket.CLOSED;
+  if (needsSocket) {
+    state.sessionSocketReady = openSessionSocket(sessionId);
+  }
+  try {
+    await state.sessionSocketReady;
+  } catch {
+    // Best-effort only. The HTTP send can still proceed if the socket is slow.
+  }
 }
 
 function handleSessionMessage(message) {
@@ -583,6 +644,7 @@ function handleSessionMessage(message) {
   }
   if (message.type === "session.snapshot") {
     state.activeSnapshot = message.data;
+    state.lastPreviewOpenToken = state.activeSnapshot?.session?.preview_open_token || state.lastPreviewOpenToken;
     thinkingSelect.value = normalizeThinkingValue(state.activeSnapshot.session?.thinking || currentConfig().thinking);
     modeSelect.value = state.activeSnapshot.session?.mode || "auto";
     renderAll();
@@ -632,6 +694,7 @@ function handleSessionMessage(message) {
     if (!["running", "queued"].includes(message.data.session.status || "")) {
       state.activeRunId = "";
     }
+    maybeOpenPreviewWindow(message.data.session);
     upsertSession(message.data.session);
     renderAll();
     return;
@@ -677,6 +740,8 @@ function removeSessionLocal(sessionId) {
     state.sessionSocket.close();
     state.sessionSocket = null;
   }
+  state.sessionSocketSessionId = "";
+  state.sessionSocketReady = Promise.resolve();
   state.activeSessionId = "";
   state.activeSnapshot = null;
   state.activeRunId = "";
@@ -1038,14 +1103,41 @@ function renderBanner() {
     sessionTitle.textContent = "select a session";
     sessionModeLabel.textContent = bannerModeText(modeSelect.value, currentThinkingValue());
     applySessionStatusBadge(sessionState, "");
+    openPreviewButton.classList.add("is-hidden");
     deleteSessionButton.classList.add("is-hidden");
     return;
   }
   sessionTitle.textContent = session.title || "new session";
   sessionModeLabel.textContent = bannerModeText(session.mode, session.thinking);
   applySessionStatusBadge(sessionState, session.status);
+  openPreviewButton.classList.toggle("is-hidden", !session.preview_url);
+  openPreviewButton.disabled = !session.preview_url;
   deleteSessionButton.classList.remove("is-hidden");
   deleteSessionButton.disabled = ["running", "queued"].includes(session.status || "");
+}
+
+function openPreviewWindow(session = state.activeSnapshot?.session) {
+  const previewUrl = `${session?.preview_url || ""}`.trim();
+  if (!previewUrl) {
+    composerStatus.textContent = "preview is not ready yet";
+    return;
+  }
+  const popup = window.open(previewUrl, "_blank", "noopener,noreferrer,width=1460,height=960");
+  if (!popup) {
+    composerStatus.textContent = "the browser blocked the preview window";
+    return;
+  }
+  composerStatus.textContent = "preview opened";
+}
+
+function maybeOpenPreviewWindow(session) {
+  const previewUrl = `${session?.preview_url || ""}`.trim();
+  const openToken = `${session?.preview_open_token || ""}`.trim();
+  if (!previewUrl || !openToken || openToken === state.lastPreviewOpenToken) {
+    return;
+  }
+  state.lastPreviewOpenToken = openToken;
+  openPreviewWindow(session);
 }
 
 function currentApprovalStatus(entry) {
@@ -1644,6 +1736,7 @@ async function sendPrompt() {
   renderTranscript();
   renderComposerState();
   try {
+    await ensureSessionSocketReady();
     const res = await api(`/api/v1/sessions/${state.activeSessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1868,6 +1961,7 @@ providerOAuth.addEventListener("click", connectOAuth);
 sessionRailToggle?.addEventListener("click", toggleSessionRail);
 sessionRailBackdrop?.addEventListener("click", closeSessionRail);
 newSessionButton.addEventListener("click", createSession);
+openPreviewButton.addEventListener("click", () => openPreviewWindow());
 deleteSessionButton.addEventListener("click", () => deleteSession());
 thinkingSelect.addEventListener("change", setThinking);
 modeSelect.addEventListener("change", setMode);
