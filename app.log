@@ -43,3 +43,10 @@ websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
 websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
 websocket dial error: dial tcp: lookup chatgpt.com: operation was canceled
 completion error: api error 402: map[error:map[code:402 message:This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 3499. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account metadata:map[provider_name:<nil>]] user_id:user_2tT5YnsM6wlmoJ0OrkLSbwEreIb]
+websocket write error: write tcp 10.8.0.3:37176->104.18.32.47:443: write: broken pipe
+response error event: response.failed
+websocket write error: write tcp 10.8.0.3:47910->172.64.155.209:443: write: broken pipe
+websocket write error: write tcp 10.8.0.3:45766->172.64.155.209:443: write: broken pipe
+websocket read error: websocket: close 1011 (internal server error): keepalive ping timeout
+websocket read error: websocket: close 1011 (internal server error): keepalive ping timeout
+websocket read error: websocket: close 1011 (internal server error): keepalive ping timeout

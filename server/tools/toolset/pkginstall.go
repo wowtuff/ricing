@@ -1,7 +1,6 @@
 package toolset
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -13,8 +12,7 @@ import (
 )
 
 var (
-	ErrAuthCancelled = errors.New("authentication cancelled by user")
-	ErrAuthFailed    = errors.New("authentication failed")
+	ErrAuthFailed = errors.New("authentication failed")
 )
 
 func isRoot() bool {
@@ -76,18 +74,10 @@ func (t InstallPackageTool) Run(ctx context.Context, args map[string]any) (map[s
 		}
 
 		if err := installWithManager(ctx, mgr, pkgName); err != nil {
-			if errors.Is(err, ErrAuthCancelled) {
-				return map[string]any{
-					"ok":      false,
-					"message": "installation cancelled by user",
-					"package": pkgName,
-				}, nil
-			}
-
 			if errors.Is(err, ErrAuthFailed) {
 				return map[string]any{
 					"ok":      false,
-					"message": "authentication failed",
+					"message": "sudo authentication is required",
 					"package": pkgName,
 					"error":   err.Error(),
 				}, nil
@@ -264,39 +254,19 @@ func runWithPrivilegePrompt(ctx context.Context, operation, name string, args ..
 		}
 		return nil
 	}
-
-	password, err := promptSudoPassword(ctx, operation)
-	if err != nil {
-		return err
-	}
-
-	cmd := exec.CommandContext(ctx, "sudo", append([]string{"-S", "-p", "", name}, args...)...)
-	cmd.Stdin = strings.NewReader(password + "\n")
-
+	cmd := exec.CommandContext(ctx, "sudo", append([]string{"-n", name}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		s := strings.ToLower(string(out))
-		if strings.Contains(s, "incorrect password") || strings.Contains(s, "sorry, try again") {
-			return fmt.Errorf("%w: %s", ErrAuthFailed, strings.TrimSpace(string(out)))
+		if strings.Contains(s, "a password is required") ||
+			strings.Contains(s, "a terminal is required") ||
+			strings.Contains(s, "no tty present") ||
+			strings.Contains(s, "sorry, try again") ||
+			strings.Contains(s, "incorrect password") {
+			return fmt.Errorf("%w: run `sudo -v` in the terminal running ricingd to authorize %s, then try again", ErrAuthFailed, operation)
 		}
 		return fmt.Errorf("install failed with sudo: %v: %s", err, string(out))
 	}
 
 	return nil
-}
-
-func promptSudoPassword(ctx context.Context, operation string) (string, error) {
-	_ = ctx
-	fmt.Printf("authentication required for %s\n", operation)
-	fmt.Print("sudo password: ")
-	reader := bufio.NewReader(os.Stdin)
-	password, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	password = strings.TrimSpace(password)
-	if password == "" {
-		return "", ErrAuthCancelled
-	}
-	return password, nil
 }

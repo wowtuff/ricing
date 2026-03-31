@@ -35,7 +35,7 @@ link_path() {
 
 sync_runtime_dir() {
     local dir=$1
-    [ -d "$dir" ] || return
+    [ -d "$dir" ] || return 0
     for item in "$dir"/*; do
         [ -e "$item" ] || continue
         local name

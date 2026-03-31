@@ -57,6 +57,7 @@ type runState struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	assistantEntryID string
+	approvedCalls    map[string]struct{}
 }
 
 type RunService struct {
@@ -132,10 +133,11 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 	_ = ctx
 	ctx2, cancel := context.WithCancel(context.Background())
 	st := &runState{
-		run:    run,
-		hub:    NewRunHub(runID, 2048),
-		ctx:    ctx2,
-		cancel: cancel,
+		run:           run,
+		hub:           NewRunHub(runID, 2048),
+		ctx:           ctx2,
+		cancel:        cancel,
+		approvedCalls: make(map[string]struct{}),
 	}
 	_, _ = s.sessions.SetRunConfig(run.SessionID, run.ProviderID, run.Model, run.ReasoningEffort)
 	s.mu.Lock()
@@ -359,48 +361,52 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 		return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
 	}
 	if modeNeedsApproval(st.run.Mode, call) {
-		approval, err := s.sessions.CreateApproval(st.run.SessionID, st.run.ID, toolCallEntry.ID, call.Name, summarizeToolCall(call), cloneMap(call.Arguments))
-		if err != nil {
-			return agent.ToolResult{}, err
-		}
-		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
-			RunID:   st.run.ID,
-			Kind:    "approval",
-			Status:  "pending",
-			Title:   approval.ToolName,
-			Content: approval.Summary,
-			Meta: map[string]any{
-				"approval_id": approval.ID,
-			},
-		})
-		resolution, err := s.sessions.WaitForApproval(ctx, approval.ID)
-		if err != nil {
-			return agent.ToolResult{}, err
-		}
-		if resolution.Status != "approved" {
+		approvalKey := approvedCallKey(call)
+		if !st.hasApprovedCall(approvalKey) {
+			approval, err := s.sessions.CreateApproval(st.run.SessionID, st.run.ID, toolCallEntry.ID, call.Name, summarizeToolCall(call), cloneMap(call.Arguments))
+			if err != nil {
+				return agent.ToolResult{}, err
+			}
 			_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 				RunID:   st.run.ID,
 				Kind:    "approval",
-				Status:  "rejected",
+				Status:  "pending",
 				Title:   approval.ToolName,
-				Content: firstNonEmptyString(resolution.Note, "user rejected the action"),
+				Content: approval.Summary,
 				Meta: map[string]any{
 					"approval_id": approval.ID,
 				},
 			})
-			blocked := map[string]any{"ok": false, "rejected": true, "reason": firstNonEmptyString(resolution.Note, "user rejected the action")}
-			return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
+			resolution, err := s.sessions.WaitForApproval(ctx, approval.ID)
+			if err != nil {
+				return agent.ToolResult{}, err
+			}
+			if resolution.Status != "approved" {
+				_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+					RunID:   st.run.ID,
+					Kind:    "approval",
+					Status:  "rejected",
+					Title:   approval.ToolName,
+					Content: firstNonEmptyString(resolution.Note, "user rejected the action"),
+					Meta: map[string]any{
+						"approval_id": approval.ID,
+					},
+				})
+				blocked := map[string]any{"ok": false, "rejected": true, "reason": firstNonEmptyString(resolution.Note, "user rejected the action")}
+				return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
+			}
+			st.markApprovedCall(approvalKey)
+			_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+				RunID:   st.run.ID,
+				Kind:    "approval",
+				Status:  "approved",
+				Title:   approval.ToolName,
+				Content: firstNonEmptyString(resolution.Note, "action approved"),
+				Meta: map[string]any{
+					"approval_id": approval.ID,
+				},
+			})
 		}
-		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
-			RunID:   st.run.ID,
-			Kind:    "approval",
-			Status:  "approved",
-			Title:   approval.ToolName,
-			Content: firstNonEmptyString(resolution.Note, "action approved"),
-			Meta: map[string]any{
-				"approval_id": approval.ID,
-			},
-		})
 	}
 	output, err := s.runTool(ctx, call)
 	if err != nil {
@@ -774,6 +780,28 @@ func (st *runState) getOutput() string {
 	return st.run.Result.OutputText
 }
 
+func (st *runState) hasApprovedCall(key string) bool {
+	if key == "" {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	_, ok := st.approvedCalls[key]
+	return ok
+}
+
+func (st *runState) markApprovedCall(key string) {
+	if key == "" {
+		return
+	}
+	st.mu.Lock()
+	if st.approvedCalls == nil {
+		st.approvedCalls = make(map[string]struct{})
+	}
+	st.approvedCalls[key] = struct{}{}
+	st.mu.Unlock()
+}
+
 func cloneMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
@@ -837,6 +865,17 @@ func renderPlan(args map[string]any) string {
 func summarizeToolCall(call agent.StreamToolCall) string {
 	payload, _ := json.Marshal(call.Arguments)
 	return call.Name + " " + string(payload)
+}
+
+func approvedCallKey(call agent.StreamToolCall) string {
+	if call.Name == "" {
+		return ""
+	}
+	payload, err := json.Marshal(call.Arguments)
+	if err != nil {
+		return call.Name
+	}
+	return call.Name + ":" + string(payload)
 }
 
 func formatToolOutput(output map[string]any) string {
