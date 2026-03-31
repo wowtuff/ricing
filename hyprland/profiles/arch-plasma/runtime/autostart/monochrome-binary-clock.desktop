@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=KDE Rice Preview Bootstrap
+Exec=bash -lc 'sleep 6; ~/.config/plasma-rice/launch.sh'
+Terminal=false
+X-KDE-AutostartScript=true

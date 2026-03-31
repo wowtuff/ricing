@@ -1,0 +1,35 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 34,
+    "margin-top": 12,
+    "margin-left": 20,
+    "margin-right": 20,
+    "modules-left": ["hyprland/workspaces"],
+    "modules-center": ["clock"],
+    "modules-right": ["custom/launcher"],
+    "hyprland/workspaces": {
+        "disable-scroll": true,
+        "all-outputs": true,
+        "format": "{icon}",
+        "format-icons": {
+            "active": "",
+            "default": "",
+            "empty": "",
+            "urgent": ""
+        },
+        "persistent-workspaces": {
+            "*": 5
+        }
+    },
+    "clock": {
+        "format": "{:%H:%M}",
+        "format-alt": "{:%A · %Y-%m-%d}",
+        "tooltip-format": "{:%A, %B %d %Y | %H:%M}"
+    },
+    "custom/launcher": {
+        "format": "APPS",
+        "tooltip": "Open launcher",
+        "on-click": "rofi -show drun"
+    }
+}

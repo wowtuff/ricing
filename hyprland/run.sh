@@ -60,19 +60,19 @@ set_profile() {
     case "$PROFILE" in
         arch-hyprland)
             IMAGE="$IMAGE_BASE-$PROFILE"
-            DOCKERFILE="$MYDIR/Dockerfile"
-            START_FILE="$MYDIR/start.sh"
-            REFRESH_FILE="$MYDIR/refresh.sh"
-            START_CMD="/workspace/start.sh"
-            REFRESH_CMD="/workspace/refresh.sh"
+            DOCKERFILE="$MYDIR/profiles/arch-hyprland/Dockerfile"
+            START_FILE="$MYDIR/profiles/arch-hyprland/start.sh"
+            REFRESH_FILE="$MYDIR/profiles/arch-hyprland/refresh.sh"
+            START_CMD="/workspace/profiles/arch-hyprland/start.sh"
+            REFRESH_CMD="/workspace/profiles/arch-hyprland/refresh.sh"
             RUNTIME_FILES=(
-                "$MYDIR/hyprland.conf"
-                "$MYDIR/generated.conf"
-                "$MYDIR/kitty"
-                "$MYDIR/waybar"
-                "$MYDIR/rofi"
-                "$MYDIR/dunst"
-                "$MYDIR/swww"
+                "$MYDIR/profiles/arch-hyprland/runtime/hyprland.conf"
+                "$MYDIR/profiles/arch-hyprland/runtime/generated.conf"
+                "$MYDIR/profiles/arch-hyprland/runtime/kitty"
+                "$MYDIR/profiles/arch-hyprland/runtime/waybar"
+                "$MYDIR/profiles/arch-hyprland/runtime/rofi"
+                "$MYDIR/profiles/arch-hyprland/runtime/dunst"
+                "$MYDIR/profiles/arch-hyprland/runtime/swww"
             )
             RESTART_FILES=("$START_FILE" "$REFRESH_FILE")
             BUILD_FILES=("$DOCKERFILE")
@@ -182,8 +182,22 @@ set_profile() {
 }
 
 ensure_host_paths() {
-    mkdir -p "$MYDIR/kitty" "$MYDIR/waybar" "$MYDIR/rofi" "$MYDIR/dunst" "$MYDIR/swww"
-    touch "$MYDIR/generated.conf" "$MYDIR/hyprland.conf" "$START_FILE" "$REFRESH_FILE"
+    mkdir -p "$(dirname "$START_FILE")" "$(dirname "$REFRESH_FILE")"
+    touch "$START_FILE" "$REFRESH_FILE"
+    for path in "${RUNTIME_FILES[@]}"; do
+        if [ -e "$path" ]; then
+            continue
+        fi
+        case "$path" in
+            *.conf|*.ini|*.json|*.css|*.txt)
+                mkdir -p "$(dirname "$path")"
+                touch "$path"
+                ;;
+            *)
+                mkdir -p "$path"
+                ;;
+        esac
+    done
 }
 
 is_running() {
@@ -225,7 +239,49 @@ show_endpoints() {
 
 build_image() {
     echo "building $IMAGE..."
-    docker build -t "$IMAGE" -f "$DOCKERFILE" "$MYDIR"
+    if [ "$PROFILE" = "arch-plasma" ]; then
+        local build_container="${CONTAINER}-build-${PROFILE}"
+        docker rm -f "$build_container" >/dev/null 2>&1 || true
+        docker run \
+            --name "$build_container" \
+            --network host \
+            archlinux:latest \
+            /bin/bash -lc '
+                set -euo pipefail
+                printf "%s\n" \
+                    "142.0.200.124 mirrors.kernel.org" \
+                    "194.156.163.63 geo.mirror.pkgbuild.com" \
+                    "180.150.156.88 mirror.rackspace.com" \
+                    >> /etc/hosts
+                printf "%s\n" \
+                    "Server = https://mirrors.kernel.org/archlinux/\$repo/os/\$arch" \
+                    "Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch" \
+                    "Server = https://mirror.rackspace.com/\$repo/os/\$arch" \
+                    > /etc/pacman.d/mirrorlist
+                pacman-key --init && pacman-key --populate archlinux
+                pacman -Sy --noconfirm --disable-download-timeout archlinux-keyring
+                pacman -S --noconfirm --disable-download-timeout \
+                    bash sudo dbus curl git python python-pip ca-certificates \
+                    xorg-server-xvfb x11vnc xorg-xauth xorg-xrdb xorg-xsetroot \
+                    xterm dmenu jack2 firefox kitty fastfetch mesa xdg-user-dirs \
+                    ttf-dejavu ttf-jetbrains-mono noto-fonts noto-fonts-emoji \
+                    plasma-desktop plasma-workspace conky htop wmctrl xdotool
+                echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+                locale-gen
+                echo "LANG=en_US.UTF-8" > /etc/locale.conf
+                python -m pip install --break-system-packages websockify
+                git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc
+                ln -sf /opt/novnc/vnc.html /opt/novnc/index.html
+                useradd -m -G wheel,video,audio -s /bin/bash hypruser
+                echo "hypruser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+                mkdir -p /run/user/1000 /home/hypruser/.config /home/hypruser/.rice
+                chown -R hypruser:hypruser /run/user/1000 /home/hypruser
+            '
+        docker commit "$build_container" "$IMAGE" > /dev/null
+        docker rm -f "$build_container" >/dev/null 2>&1 || true
+        return
+    fi
+    docker build --network host -t "$IMAGE" -f "$DOCKERFILE" "$MYDIR"
 }
 
 replace_if_needed() {

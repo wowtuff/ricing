@@ -16,10 +16,18 @@ const state = {
   activeSessionId: "",
   activeSnapshot: null,
   catalogSocket: null,
+  catalogReconnectTimer: null,
+  catalogPingTimer: null,
   sessionSocket: null,
+  sessionReconnectTimer: null,
+  sessionPingTimer: null,
   sessionSocketSessionId: "",
   sessionSocketReady: Promise.resolve(),
   activeRunId: "",
+  stoppingRuns: {},
+  runHeartbeatAt: "",
+  runHeartbeatSummary: "",
+  runHeartbeatStatus: "",
   search: "",
   oauthProviderId: "",
   oauthConnected: false,
@@ -150,16 +158,19 @@ function thinkingLabel(value) {
 }
 
 function modeLabel(value) {
-  switch (`${value || ""}`.trim().toLowerCase()) {
-    case "full":
-      return "full permission";
-    case "build":
-      return "build";
-    case "plan":
-      return "plan";
-    default:
-      return "auto";
+  return normalizePermissionMode(value) === "full" ? "full access" : "basic";
+}
+
+function normalizePermissionMode(value) {
+  const mode = `${value || ""}`.trim().toLowerCase();
+  if (["full", "full_access", "full access"].includes(mode)) {
+    return "full";
   }
+  return "build";
+}
+
+function modeRequestValue(value) {
+  return normalizePermissionMode(value);
 }
 
 function currentThinkingValue() {
@@ -284,6 +295,37 @@ function wsURL() {
   return `${backendOrigin().replace(/^http/, "ws")}/api/v1/ws`;
 }
 
+function parseSocketPayload(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function clearPingTimer(key) {
+  if (!state[key]) {
+    return;
+  }
+  window.clearInterval(state[key]);
+  state[key] = null;
+}
+
+function startSocketPing(socket, timerKey) {
+  clearPingTimer(timerKey);
+  state[timerKey] = window.setInterval(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      clearPingTimer(timerKey);
+      return;
+    }
+    try {
+      socket.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      clearPingTimer(timerKey);
+    }
+  }, 25000);
+}
+
 async function refreshProviders() {
   try {
     const res = await api("/api/v1/providers");
@@ -296,6 +338,28 @@ async function refreshProviders() {
     state.backendOnline = false;
     state.oauthConnected = false;
     state.oauthProviderId = "";
+  }
+  if (!state.backendOnline) {
+    if (state.catalogReconnectTimer) {
+      window.clearTimeout(state.catalogReconnectTimer);
+      state.catalogReconnectTimer = null;
+    }
+    if (state.catalogSocket) {
+      state.catalogSocket.close();
+      state.catalogSocket = null;
+    }
+    clearPingTimer("catalogPingTimer");
+    if (state.sessionReconnectTimer) {
+      window.clearTimeout(state.sessionReconnectTimer);
+      state.sessionReconnectTimer = null;
+    }
+    if (state.sessionSocket) {
+      state.sessionSocket.close();
+      state.sessionSocket = null;
+      state.sessionSocketSessionId = "";
+      state.sessionSocketReady = Promise.resolve();
+    }
+    clearPingTimer("sessionPingTimer");
   }
   renderProviderState();
   renderVisibility();
@@ -490,7 +554,7 @@ async function createSession() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      mode: modeSelect.value || "auto",
+      mode: modeRequestValue(modeSelect.value || "build"),
       thinking: currentThinkingValue(),
       provider_id: payload.provider_id,
       model: payload.model
@@ -519,6 +583,9 @@ async function selectSession(sessionId) {
   }
   state.activeSessionId = sessionId;
   state.activeRunId = "";
+  state.runHeartbeatAt = "";
+  state.runHeartbeatSummary = "";
+  state.runHeartbeatStatus = "";
   state.localEntries = [];
   state.editingEntryId = "";
   state.expandedActivityGroups = {};
@@ -527,7 +594,8 @@ async function selectSession(sessionId) {
   state.activeSnapshot = data;
   state.lastPreviewOpenToken = data.session?.preview_open_token || "";
   thinkingSelect.value = normalizeThinkingValue(data.session?.thinking || currentConfig().thinking);
-  modeSelect.value = data.session?.mode || "auto";
+  modeSelect.value = normalizePermissionMode(data.session?.mode || "build");
+  syncActiveRunFromSnapshot();
   renderAll();
   closeSessionRail();
   state.sessionSocketReady = openSessionSocket(sessionId);
@@ -537,15 +605,24 @@ function openCatalogSocket() {
   if (!state.backendOnline) {
     return;
   }
+  if (state.catalogReconnectTimer) {
+    window.clearTimeout(state.catalogReconnectTimer);
+    state.catalogReconnectTimer = null;
+  }
   if (state.catalogSocket) {
     state.catalogSocket.close();
   }
+  clearPingTimer("catalogPingTimer");
   const socket = new WebSocket(wsURL());
   socket.onopen = () => {
     socket.send(JSON.stringify({ type: "subscribe", data: { catalog: true, after_seq: 0 } }));
+    startSocketPing(socket, "catalogPingTimer");
   };
   socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
+    const message = parseSocketPayload(event.data);
+    if (!message) {
+      return;
+    }
     if (message.type === "session.snapshot") {
       state.sessions = Array.isArray(message.data?.sessions) ? message.data.sessions : [];
       renderSessions();
@@ -562,6 +639,18 @@ function openCatalogSocket() {
       renderAll();
     }
   };
+  socket.onclose = () => {
+    clearPingTimer("catalogPingTimer");
+    if (state.catalogSocket === socket) {
+      state.catalogSocket = null;
+      if (state.backendOnline) {
+        state.catalogReconnectTimer = window.setTimeout(() => {
+          state.catalogReconnectTimer = null;
+          openCatalogSocket();
+        }, 1200);
+      }
+    }
+  };
   state.catalogSocket = socket;
 }
 
@@ -570,9 +659,14 @@ function openSessionSocket(sessionId) {
     state.sessionSocketReady = Promise.resolve();
     return state.sessionSocketReady;
   }
+  if (state.sessionReconnectTimer) {
+    window.clearTimeout(state.sessionReconnectTimer);
+    state.sessionReconnectTimer = null;
+  }
   if (state.sessionSocket) {
     state.sessionSocket.close();
   }
+  clearPingTimer("sessionPingTimer");
   const afterSeq = Number(state.activeSnapshot?.session?.latest_seq) || 0;
   let resolveReady = null;
   let settled = false;
@@ -590,9 +684,13 @@ function openSessionSocket(sessionId) {
   const socket = new WebSocket(wsURL());
   socket.onopen = () => {
     socket.send(JSON.stringify({ type: "subscribe", data: { session_id: sessionId, after_seq: afterSeq } }));
+    startSocketPing(socket, "sessionPingTimer");
   };
   socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
+    const message = parseSocketPayload(event.data);
+    if (!message) {
+      return;
+    }
     if (message.type === "subscribed" && message.data?.session_id === sessionId) {
       window.clearTimeout(readyTimer);
       settle();
@@ -604,12 +702,21 @@ function openSessionSocket(sessionId) {
     settle();
   };
   socket.onclose = () => {
+    clearPingTimer("sessionPingTimer");
     window.clearTimeout(readyTimer);
     settle();
     if (state.sessionSocket === socket) {
       state.sessionSocket = null;
       state.sessionSocketSessionId = "";
       state.sessionSocketReady = Promise.resolve();
+      if (state.backendOnline && state.activeSessionId === sessionId) {
+        state.sessionReconnectTimer = window.setTimeout(() => {
+          state.sessionReconnectTimer = null;
+          if (state.activeSessionId === sessionId) {
+            state.sessionSocketReady = openSessionSocket(sessionId);
+          }
+        }, 1000);
+      }
     }
   };
   state.sessionSocket = socket;
@@ -646,7 +753,8 @@ function handleSessionMessage(message) {
     state.activeSnapshot = message.data;
     state.lastPreviewOpenToken = state.activeSnapshot?.session?.preview_open_token || state.lastPreviewOpenToken;
     thinkingSelect.value = normalizeThinkingValue(state.activeSnapshot.session?.thinking || currentConfig().thinking);
-    modeSelect.value = state.activeSnapshot.session?.mode || "auto";
+    modeSelect.value = normalizePermissionMode(state.activeSnapshot.session?.mode || "build");
+    syncActiveRunFromSnapshot();
     renderAll();
     return;
   }
@@ -670,14 +778,34 @@ function handleSessionMessage(message) {
     return;
   }
   if (message.type === "entry.delta") {
+    const stickToBottom = shouldStickTranscript();
     const entry = message.data?.entry;
     if (entry) {
       upsertEntry(entry);
+      if (!patchStreamingAssistantEntry(entry)) {
+        renderTranscript(stickToBottom);
+      } else if (stickToBottom) {
+        scrollTranscriptToBottom();
+      }
     } else {
       appendEntryDelta(message.data?.entry_id, message.data?.text || "");
+      renderTranscript(stickToBottom);
     }
-    renderTranscript();
     renderComposerState();
+    return;
+  }
+  if (message.type === "run.heartbeat") {
+    const runId = `${message.data?.run_id || ""}`.trim();
+    if (runId && state.activeRunId && runId !== state.activeRunId) {
+      return;
+    }
+    state.runHeartbeatAt = `${message.data?.at || new Date().toISOString()}`;
+    state.runHeartbeatSummary = `${message.data?.summary || ""}`.trim();
+    state.runHeartbeatStatus = `${message.data?.status || ""}`.trim();
+    renderComposerState();
+    if (shouldShowThinkingEntry()) {
+      renderTranscript(false);
+    }
     return;
   }
   if (message.type === "approval.updated") {
@@ -691,9 +819,8 @@ function handleSessionMessage(message) {
   if (message.type === "session.updated" && message.data?.session) {
     state.activeSnapshot.session = { ...state.activeSnapshot.session, ...message.data.session };
     thinkingSelect.value = normalizeThinkingValue(state.activeSnapshot.session?.thinking || currentConfig().thinking);
-    if (!["running", "queued"].includes(message.data.session.status || "")) {
-      state.activeRunId = "";
-    }
+    modeSelect.value = normalizePermissionMode(state.activeSnapshot.session?.mode || modeSelect.value);
+    syncActiveRunFromSnapshot();
     maybeOpenPreviewWindow(message.data.session);
     upsertSession(message.data.session);
     renderAll();
@@ -740,16 +867,67 @@ function removeSessionLocal(sessionId) {
     state.sessionSocket.close();
     state.sessionSocket = null;
   }
+  clearPingTimer("sessionPingTimer");
+  if (state.sessionReconnectTimer) {
+    window.clearTimeout(state.sessionReconnectTimer);
+    state.sessionReconnectTimer = null;
+  }
   state.sessionSocketSessionId = "";
   state.sessionSocketReady = Promise.resolve();
   state.activeSessionId = "";
   state.activeSnapshot = null;
   state.activeRunId = "";
+  state.stoppingRuns = {};
+  state.runHeartbeatAt = "";
+  state.runHeartbeatSummary = "";
+  state.runHeartbeatStatus = "";
   state.localEntries = [];
   state.editingEntryId = "";
   state.expandedActivityGroups = {};
   thinkingSelect.value = normalizeThinkingValue(currentConfig().thinking);
   closeSessionRail();
+}
+
+function latestRunIdFromEntries(entries) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const runId = `${entries[index]?.run_id || ""}`.trim();
+    if (runId) {
+      return runId;
+    }
+  }
+  return "";
+}
+
+function syncActiveRunFromSnapshot() {
+  const session = state.activeSnapshot?.session;
+  if (!session) {
+    state.activeRunId = "";
+    state.stoppingRuns = {};
+    resetRunHeartbeat();
+    return;
+  }
+  const status = `${session.status || ""}`.trim().toLowerCase();
+  if (status === "running" || status === "queued") {
+    const runId = latestRunIdFromEntries(state.activeSnapshot?.entries || []);
+    if (runId) {
+      state.activeRunId = runId;
+    }
+    if (!state.runHeartbeatAt) {
+      state.runHeartbeatAt = `${session.updated_at || new Date().toISOString()}`;
+    }
+    return;
+  }
+  if (state.activeRunId) {
+    delete state.stoppingRuns[state.activeRunId];
+  }
+  state.activeRunId = "";
+  resetRunHeartbeat();
+}
+
+function resetRunHeartbeat() {
+  state.runHeartbeatAt = "";
+  state.runHeartbeatSummary = "";
+  state.runHeartbeatStatus = "";
 }
 
 function removeMatchedLocalEntry(entry) {
@@ -1218,7 +1396,26 @@ function thinkingStatusSummary() {
   if (latestActivity) {
     return activityText(latestActivity);
   }
+  if (state.runHeartbeatSummary) {
+    return state.runHeartbeatSummary;
+  }
   return "Working on your request";
+}
+
+function staleUpdateLabel(input) {
+  if (!input) {
+    return "";
+  }
+  const deltaMs = Math.max(0, Date.now() - new Date(input).getTime());
+  const minutes = Math.floor(deltaMs / 60000);
+  if (minutes < 1) {
+    return "under a minute";
+  }
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h`;
 }
 
 function shouldShowThinkingEntry() {
@@ -1278,33 +1475,37 @@ function collapseFinishedActivity(entries) {
   const collapsed = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
-    if (
-      !isInlineActivity(entry) ||
-      !entry.run_id ||
-      entry.run_id === state.activeRunId
-    ) {
+    if (!isInlineActivity(entry)) {
       collapsed.push(entry);
       continue;
     }
+    const runId = `${entry.run_id || ""}`.trim();
     const group = [entry];
     let cursor = index + 1;
     while (cursor < entries.length) {
       const candidate = entries[cursor];
-      if (!isInlineActivity(candidate) || candidate.run_id !== entry.run_id) {
+      if (!isInlineActivity(candidate)) {
+        break;
+      }
+      const candidateRunId = `${candidate.run_id || ""}`.trim();
+      if (candidateRunId !== runId) {
         break;
       }
       group.push(candidate);
       cursor += 1;
     }
     index = cursor - 1;
-    const groupId = `activity_group_${entry.run_id}_${entry.id}`;
+    const groupId = `activity_group_${runId || "session"}_${entry.id}`;
+    const sessionStatus = `${state.activeSnapshot?.session?.status || ""}`.trim().toLowerCase();
+    const live = Boolean(runId && runId === state.activeRunId && ["running", "queued"].includes(sessionStatus));
     collapsed.push({
       id: groupId,
       kind: "activity_group",
       group_id: groupId,
-      run_id: entry.run_id,
+      run_id: runId,
       entries: group,
       expanded: Boolean(state.expandedActivityGroups[groupId]),
+      live,
       created_at: group[0].created_at,
       updated_at: group[group.length - 1].updated_at
     });
@@ -1312,7 +1513,20 @@ function collapseFinishedActivity(entries) {
   return collapsed;
 }
 
-function renderTranscript() {
+function shouldStickTranscript() {
+  if (!transcript) {
+    return true;
+  }
+  const distance = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+  return distance <= 140;
+}
+
+function scrollTranscriptToBottom() {
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function renderTranscript(stickToBottom = shouldStickTranscript()) {
+  const previousTop = transcript.scrollTop;
   const entries = transcriptEntries();
   transcript.innerHTML = entries.map(renderEntryCard).join("");
   transcript.querySelectorAll("[data-activity-toggle]").forEach((button) => {
@@ -1327,7 +1541,24 @@ function renderTranscript() {
   transcript.querySelectorAll("[data-edit-entry]").forEach((button) => {
     button.addEventListener("click", () => beginEditMessage(button.dataset.editEntry));
   });
-  transcript.scrollTop = transcript.scrollHeight;
+  if (stickToBottom) {
+    scrollTranscriptToBottom();
+  } else {
+    transcript.scrollTop = previousTop;
+  }
+}
+
+function patchStreamingAssistantEntry(entry) {
+  if (entry?.kind !== "assistant_message" || !entry?.id) {
+    return false;
+  }
+  const selector = `[data-entry-id="${cssEscape(entry.id)}"] .entry-content`;
+  const content = transcript.querySelector(selector);
+  if (!content) {
+    return false;
+  }
+  content.textContent = entry.content || "";
+  return true;
 }
 
 function entryLabel(entry) {
@@ -1431,10 +1662,16 @@ function renderPlanEntry(entry) {
 function renderThinkingStatusEntry() {
   const planEntry = activePlanEntry();
   const summary = thinkingStatusSummary();
+  const sessionStatus = `${state.activeSnapshot?.session?.status || ""}`.trim().toLowerCase();
   const updatedAt = lastEntryForKinds(["tool_call", "change", "verification", "system", "assistant_message"], state.activeRunId)?.updated_at
+    || state.runHeartbeatAt
     || state.activeSnapshot?.session?.updated_at
     || "";
-  const statusLine = updatedAt ? `Last update ${escapeHTML(formatRelative(updatedAt))}` : "Waiting for the next update";
+  const staleMs = updatedAt ? Math.max(0, Date.now() - new Date(updatedAt).getTime()) : Infinity;
+  const staleLabel = staleUpdateLabel(updatedAt);
+  const statusLine = ["running", "queued"].includes(sessionStatus) && staleMs > 90000 && staleLabel
+    ? `No backend updates for ${escapeHTML(staleLabel)}`
+    : (updatedAt ? `Last update ${escapeHTML(formatRelative(updatedAt))}` : "Waiting for the next update");
   const summaryMarkup = summary ? `<div class="thinking-status-summary">${escapeHTML(summary)}</div>` : "";
   const detailMarkup = `<div class="thinking-status-detail">${statusLine}</div>`;
   if (!planEntry) {
@@ -1460,6 +1697,17 @@ function compactToolArgs(value) {
   return value.map((item) => `${item ?? ""}`.trim()).filter(Boolean).join(" ");
 }
 
+function compactActivityLine(value, maxLength = 180) {
+  const normalized = `${value ?? ""}`.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
 function activityText(entry) {
   if (entry.kind === "tool_call") {
     const tool = `${entry.title || ""}`.trim();
@@ -1467,7 +1715,7 @@ function activityText(entry) {
       const command = `${entry.meta?.command || ""}`.trim();
       const args = compactToolArgs(entry.meta?.args);
       const payload = [command, args].filter(Boolean).join(" ");
-      return payload ? `Ran ${payload}` : "Ran command";
+      return payload ? `Ran ${compactActivityLine(payload)}` : "Ran command";
     }
     if (tool === "apply_patch") {
       return "Applied a patch";
@@ -1478,15 +1726,15 @@ function activityText(entry) {
     if (tool === "request_user_input") {
       return "Asked for a quick choice";
     }
-    return tool ? `Ran ${tool}` : "Ran tool";
+    return compactActivityLine(tool ? `Ran ${tool}` : "Ran tool");
   }
   if (entry.kind === "change") {
-    return entry.content || "Recorded a change";
+    return compactActivityLine(entry.content || "Recorded a change");
   }
   if (entry.kind === "verification") {
-    return entry.content || "Verification finished";
+    return compactActivityLine(entry.content || "Verification finished");
   }
-  return entry.content || entry.title || entry.kind;
+  return compactActivityLine(entry.content || entry.title || entry.kind);
 }
 
 function toggleActivityGroup(groupId) {
@@ -1500,21 +1748,24 @@ function toggleActivityGroup(groupId) {
 function renderActivityGroupEntry(entry) {
   const logs = Array.isArray(entry.entries) ? entry.entries : [];
   const count = logs.length;
+  const countLabel = count > 99 ? "99+" : `${count}`;
   const latest = logs[logs.length - 1];
   const summary = latest ? activityText(latest) : "Activity finished";
   const details = entry.expanded
     ? `<div class="activity-group-lines">${logs.map((log) => `<div class="activity-line">${escapeHTML(activityText(log))}</div>`).join("")}</div>`
     : "";
   const toggleLabel = entry.expanded ? "hide logs" : "show logs";
+  const liveBadge = entry.live ? `<span class="status-badge running subtle">live</span>` : "";
   return `
-    <article class="entry-card activity-group">
+    <article class="entry-card activity-group" data-entry-id="${escapeHTML(entry.id || "")}">
       <div class="entry-head">
         <span class="entry-title">activity</span>
         <div class="entry-head-meta">
+          ${liveBadge}
           <span class="entry-meta">${escapeHTML(formatRelative(entry.updated_at || entry.created_at))}</span>
         </div>
       </div>
-      <div class="activity-group-summary">${escapeHTML(count === 1 ? "1 activity update" : `${count} activity updates`)}</div>
+      <div class="activity-group-summary">${escapeHTML(count === 1 ? "1 activity update" : `${countLabel} activity updates`)}</div>
       <div class="activity-group-latest">${escapeHTML(summary)}</div>
       ${details}
       <div class="entry-card-actions">
@@ -1558,16 +1809,16 @@ function renderEntryCard(entry) {
     return renderActivityGroupEntry(entry);
   }
   if (isInlineActivity(entry)) {
-    return `<article class="entry-card activity-entry ${escapeHTML(entry.kind)}"><div class="activity-line">${escapeHTML(activityText(entry))}</div></article>`;
+    return `<article class="entry-card activity-entry ${escapeHTML(entry.kind)}" data-entry-id="${escapeHTML(entry.id || "")}"><div class="activity-line">${escapeHTML(activityText(entry))}</div></article>`;
   }
   if (entry.kind === "plan") {
     if (shouldShowThinkingEntry() && activePlanEntry()?.id === entry.id) {
       return "";
     }
-    return `<article class="entry-card plan ${escapeHTML(entry.status || "")}">${renderPlanEntry(entry)}</article>`;
+    return `<article class="entry-card plan ${escapeHTML(entry.status || "")}" data-entry-id="${escapeHTML(entry.id || "")}">${renderPlanEntry(entry)}</article>`;
   }
   if (entry.kind === "thinking_status") {
-    return `<article class="entry-card thinking-status ${escapeHTML(entry.status || "")}">${renderThinkingStatusEntry()}</article>`;
+    return `<article class="entry-card thinking-status ${escapeHTML(entry.status || "")}" data-entry-id="${escapeHTML(entry.id || "")}">${renderThinkingStatusEntry()}</article>`;
   }
   const status = entry.status ? ` ${escapeHTML(entry.status)}` : "";
   let actions = "";
@@ -1589,7 +1840,7 @@ function renderEntryCard(entry) {
   ) {
     actions = `${actions}<div class="entry-card-actions"><button class="entry-inline-action" data-edit-entry="${escapeHTML(entry.id)}">edit</button></div>`;
   }
-  return `<article class="entry-card ${escapeHTML(entry.kind)}${status}"><div class="entry-head"><span class="entry-title">${escapeHTML(entryLabel(entry))}</span><div class="entry-head-meta"><span class="entry-meta">${escapeHTML(entryMeta(entry))}</span></div></div>${body}${actions}</article>`;
+  return `<article class="entry-card ${escapeHTML(entry.kind)}${status}" data-entry-id="${escapeHTML(entry.id || "")}"><div class="entry-head"><span class="entry-title">${escapeHTML(entryLabel(entry))}</span><div class="entry-head-meta"><span class="entry-meta">${escapeHTML(entryMeta(entry))}</span></div></div>${body}${actions}</article>`;
 }
 
 function renderAttachments() {
@@ -1617,12 +1868,18 @@ function renderAttachments() {
 }
 
 function renderComposerState() {
+  syncActiveRunFromSnapshot();
   const session = state.activeSnapshot?.session;
   const pendingLocal = [...state.localEntries].reverse().find((entry) => entry.kind === "user_message" && ["sending", "queued"].includes(entry.status || ""));
   const editing = currentEditingEntry();
   const pendingQuestion = (state.activeSnapshot?.entries || []).find((entry) => entry.kind === "question" && entry.status === "pending");
   const pendingApproval = (state.activeSnapshot?.approvals || []).find((approval) => approval.status === "pending");
-  stopButton.classList.toggle("is-hidden", !state.activeRunId);
+  const sessionStatus = `${session?.status || ""}`.trim().toLowerCase();
+  const canStop = Boolean(state.activeRunId) && ["running", "queued"].includes(sessionStatus);
+  const isStopping = Boolean(state.activeRunId && state.stoppingRuns[state.activeRunId]);
+  stopButton.classList.toggle("is-hidden", !canStop && !isStopping);
+  stopButton.disabled = isStopping;
+  stopButton.textContent = isStopping ? "stopping" : "stop";
   cancelEditButton.classList.toggle("is-hidden", !editing);
   sendButton.textContent = editing ? "save" : "send";
   promptInput.placeholder = editing ? "edit your message" : "ask for follow-up changes";
@@ -1647,6 +1904,16 @@ function renderComposerState() {
     return;
   }
   if (session.status === "running" || session.status === "queued") {
+    const staleLabel = staleUpdateLabel(state.runHeartbeatAt);
+    const staleMs = state.runHeartbeatAt ? Math.max(0, Date.now() - new Date(state.runHeartbeatAt).getTime()) : Infinity;
+    if (staleMs > 90000 && staleLabel) {
+      composerStatus.textContent = `waiting for backend update (${staleLabel})`;
+      return;
+    }
+    if (state.runHeartbeatSummary) {
+      composerStatus.textContent = state.runHeartbeatSummary;
+      return;
+    }
     composerStatus.textContent = session.status === "queued" ? "queued" : "run in progress";
     return;
   }
@@ -1662,6 +1929,7 @@ function renderComposerState() {
 }
 
 function renderAll() {
+  syncActiveRunFromSnapshot();
   renderProviderState();
   renderVisibility();
   renderBanner();
@@ -1729,7 +1997,12 @@ async function sendPrompt() {
     state.activeSnapshot.session.provider_id = payload.provider_id;
     state.activeSnapshot.session.model = payload.model;
     state.activeSnapshot.session.thinking = payload.reasoning_effort;
+    state.activeSnapshot.session.mode = modeRequestValue(modeSelect.value);
+    state.activeSnapshot.session.status = "queued";
   }
+  state.runHeartbeatAt = new Date().toISOString();
+  state.runHeartbeatSummary = "queued";
+  state.runHeartbeatStatus = "queued";
   promptInput.value = "";
   sendButton.disabled = true;
   composerStatus.textContent = "sending";
@@ -1742,7 +2015,7 @@ async function sendPrompt() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prompt,
-        mode: modeSelect.value,
+        mode: modeRequestValue(modeSelect.value),
         llm: payload
       })
     });
@@ -1767,11 +2040,16 @@ async function sendPrompt() {
     }
     updateLocalEntry(localId, { status: "queued" });
     state.activeRunId = data.run?.id || "";
+    state.runHeartbeatAt = new Date().toISOString();
+    state.runHeartbeatSummary = state.activeRunId ? "starting run" : state.runHeartbeatSummary;
+    state.runHeartbeatStatus = "queued";
     if (data.session) {
       upsertSession(data.session);
       if (state.activeSnapshot?.session) {
         state.activeSnapshot.session = { ...state.activeSnapshot.session, ...data.session };
       }
+    } else if (state.activeSnapshot?.session) {
+      state.activeSnapshot.session.status = "queued";
     }
     composerStatus.textContent = "queued";
     renderAll();
@@ -1800,7 +2078,7 @@ async function setMode() {
   const res = await api(`/api/v1/sessions/${state.activeSessionId}/mode`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: modeSelect.value })
+    body: JSON.stringify({ mode: modeRequestValue(modeSelect.value) })
   });
   const data = await res.json();
   if (res.ok) {
@@ -1906,11 +2184,36 @@ async function uploadFiles(files) {
 }
 
 async function stopRun() {
-  if (!state.activeRunId) {
+  const runId = `${state.activeRunId || ""}`.trim();
+  if (!runId) {
     return;
   }
+  if (state.stoppingRuns[runId]) {
+    return;
+  }
+  state.stoppingRuns[runId] = true;
   composerStatus.textContent = "stopping";
-  await api(`/api/v1/runs/${state.activeRunId}/cancel`, { method: "POST" });
+  renderComposerState();
+  try {
+    const res = await api(`/api/v1/runs/${runId}/cancel`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || "could not stop run");
+    }
+    if (state.activeSnapshot?.session) {
+      state.activeSnapshot.session.status = "cancelled";
+    }
+    delete state.stoppingRuns[runId];
+    if (state.activeRunId === runId) {
+      state.activeRunId = "";
+    }
+    composerStatus.textContent = "stop requested";
+    renderAll();
+  } catch (error) {
+    delete state.stoppingRuns[runId];
+    composerStatus.textContent = error.message || "could not stop run";
+    renderComposerState();
+  }
 }
 
 function formatRelative(input) {
@@ -1940,6 +2243,13 @@ function formatFileSize(size) {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) {
+    return window.CSS.escape(`${value ?? ""}`);
+  }
+  return `${value ?? ""}`.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 function escapeHTML(value) {
@@ -2007,6 +2317,17 @@ window.addEventListener("keydown", (event) => {
     closeSessionRail();
   }
 });
+
+window.setInterval(() => {
+  const status = `${state.activeSnapshot?.session?.status || ""}`.trim().toLowerCase();
+  if (!["running", "queued"].includes(status)) {
+    return;
+  }
+  renderComposerState();
+  if (shouldShowThinkingEntry()) {
+    renderTranscript(false);
+  }
+}, 15000);
 
 async function init() {
   renderProviderState();

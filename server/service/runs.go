@@ -58,6 +58,8 @@ type runState struct {
 	cancel           context.CancelFunc
 	assistantEntryID string
 	approvedCalls    map[string]struct{}
+	progressSummary  string
+	progressAt       time.Time
 }
 
 type RunService struct {
@@ -133,12 +135,15 @@ func (s *RunService) Create(ctx context.Context, req CreateRun) (Run, error) {
 	_ = ctx
 	ctx2, cancel := context.WithCancel(context.Background())
 	st := &runState{
-		run:           run,
-		hub:           NewRunHub(runID, 2048),
-		ctx:           ctx2,
-		cancel:        cancel,
-		approvedCalls: make(map[string]struct{}),
+		run:             run,
+		hub:             NewRunHub(runID, 2048),
+		ctx:             ctx2,
+		cancel:          cancel,
+		approvedCalls:   make(map[string]struct{}),
+		progressSummary: "queued",
+		progressAt:      time.Now().UTC(),
 	}
+	_, _ = s.sessions.SetMode(run.SessionID, run.Mode)
 	_, _ = s.sessions.SetRunConfig(run.SessionID, run.ProviderID, run.Model, run.ReasoningEffort)
 	s.mu.Lock()
 	s.runs[runID] = st
@@ -201,8 +206,32 @@ func (s *RunService) Cancel(id string) (Run, error) {
 	if !ok {
 		return Run{}, errors.New("run not found")
 	}
+	st.mu.Lock()
+	status := st.run.Status
+	sessionID := st.run.SessionID
+	entryID := st.assistantEntryID
+	if status == "succeeded" || status == "failed" || status == "cancelled" {
+		run := st.run
+		st.mu.Unlock()
+		return run, nil
+	}
+	st.run.Status = "cancelled"
+	st.progressSummary = "cancelled"
+	st.progressAt = time.Now().UTC()
+	run := st.run
+	st.mu.Unlock()
 	st.cancel()
-	return st.snapshot(), nil
+	if entryID != "" {
+		_, _ = s.sessions.UpdateEntry(sessionID, entryID, func(entry *SessionEntry) {
+			if entry.Status == "streaming" || entry.Status == "done" || entry.Status == "queued" || entry.Status == "running" {
+				entry.Status = "cancelled"
+			}
+		})
+	}
+	st.publish("run.status", map[string]any{"status": "cancelled", "session_id": sessionID})
+	st.publish("run.completed", map[string]any{"status": "cancelled", "session_id": sessionID})
+	_ = s.sessions.SetStatus(sessionID, "cancelled")
+	return run, nil
 }
 
 func (s *RunService) Hub(id string) (*RunHub, bool) {
@@ -216,9 +245,23 @@ func (s *RunService) Hub(id string) (*RunHub, bool) {
 }
 
 func (s *RunService) execute(st *runState) {
+	if st.ctx.Err() != nil {
+		st.setStatus("cancelled")
+		st.setProgress("cancelled")
+		st.publish("run.status", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+		st.publish("run.completed", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+		_ = s.sessions.SetStatus(st.run.SessionID, "cancelled")
+		return
+	}
+	heartbeatCtx, heartbeatCancel := context.WithCancel(st.ctx)
+	defer heartbeatCancel()
+	go s.runHeartbeat(heartbeatCtx, st)
+	s.publishSessionHeartbeat(st)
 	st.setStatus("running")
+	st.setProgress("starting run")
 	st.publish("run.status", map[string]any{"status": "running", "stage": st.run.Mode, "session_id": st.run.SessionID})
 	_ = s.sessions.SetStatus(st.run.SessionID, "running")
+	s.publishSessionHeartbeat(st)
 	assistantEntry, entryErr := s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 		RunID:   st.run.ID,
 		Kind:    "assistant_message",
@@ -229,11 +272,15 @@ func (s *RunService) execute(st *runState) {
 	if entryErr != nil {
 		st.setError(entryErr.Error())
 		st.setStatus("failed")
+		st.setProgress("failed to create assistant entry")
 		st.publish("error", map[string]any{"code": "session_entry_failed", "message": entryErr.Error()})
 		_ = s.sessions.SetStatus(st.run.SessionID, "failed")
+		s.publishSessionHeartbeat(st)
 		return
 	}
 	st.assistantEntryID = assistantEntry.ID
+	st.setProgress("waiting for provider response")
+	s.publishSessionHeartbeat(st)
 	var output string
 	prompt, images := s.buildInput(st)
 	err := agent.RunStream(st.ctx, s.reg, agent.RunOptions{
@@ -245,11 +292,14 @@ func (s *RunService) execute(st *runState) {
 		Images:          images,
 	}, prompt, agent.StreamSink{
 		OnDelta: func(text string) {
+			st.setProgress("streaming response")
 			st.appendDelta(text)
 			_, _ = s.sessions.AppendEntryContent(st.run.SessionID, st.assistantEntryID, text)
 			st.publish("assistant.delta", map[string]any{"text": text, "session_id": st.run.SessionID})
 		},
 		OnToolCall: func(call agent.StreamToolCall) {
+			st.setProgress("running " + strings.TrimSpace(call.Name))
+			s.publishSessionHeartbeat(st)
 			st.publish("tool.call", map[string]any{
 				"tool_call_id": call.ID,
 				"call_id":      call.CallID,
@@ -259,6 +309,8 @@ func (s *RunService) execute(st *runState) {
 			})
 		},
 		OnToolResult: func(res agent.ToolResult) {
+			st.setProgress("received tool result")
+			s.publishSessionHeartbeat(st)
 			st.publish("tool.result", map[string]any{
 				"tool_call_id": res.ToolCallID,
 				"call_id":      res.CallID,
@@ -275,38 +327,47 @@ func (s *RunService) execute(st *runState) {
 	}
 	select {
 	case <-st.ctx.Done():
-		st.setStatus("cancelled")
-		st.publish("run.status", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
-		st.publish("run.completed", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+		if st.snapshot().Status != "cancelled" {
+			st.setStatus("cancelled")
+			st.setProgress("cancelled")
+			st.publish("run.status", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+			st.publish("run.completed", map[string]any{"status": "cancelled", "session_id": st.run.SessionID})
+		}
 		_, _ = s.sessions.UpdateEntry(st.run.SessionID, st.assistantEntryID, func(entry *SessionEntry) {
 			entry.Status = "cancelled"
 		})
 		_ = s.sessions.SetStatus(st.run.SessionID, "cancelled")
+		s.publishSessionHeartbeat(st)
 		return
 	default:
 	}
 	if err != nil {
-		st.setError(err.Error())
+		displayErr := runFailureMessage(err)
+		st.setError(displayErr)
 		st.setStatus("failed")
-		st.publish("error", map[string]any{"code": "run_failed", "message": err.Error(), "session_id": st.run.SessionID})
+		st.setProgress(displayErr)
+		st.publish("error", map[string]any{"code": "run_failed", "message": displayErr, "session_id": st.run.SessionID})
 		st.publish("run.completed", map[string]any{"status": "failed", "session_id": st.run.SessionID})
 		_, _ = s.sessions.UpdateEntry(st.run.SessionID, st.assistantEntryID, func(entry *SessionEntry) {
 			entry.Status = "failed"
 			if entry.Content == "" {
-				entry.Content = err.Error()
+				entry.Content = displayErr
 			}
 		})
 		_ = s.sessions.SetStatus(st.run.SessionID, "failed")
+		s.publishSessionHeartbeat(st)
 		return
 	}
 	st.setResult(output)
 	st.setStatus("succeeded")
+	st.setProgress("completed")
 	st.publish("assistant.message", map[string]any{"format": "text", "text": output, "session_id": st.run.SessionID})
 	st.publish("run.completed", map[string]any{"status": "succeeded", "result": map[string]any{"output_text": output}, "session_id": st.run.SessionID})
 	_, _ = s.sessions.UpdateEntry(st.run.SessionID, st.assistantEntryID, func(entry *SessionEntry) {
 		entry.Status = "done"
 	})
 	_ = s.sessions.SetStatus(st.run.SessionID, "idle")
+	s.publishSessionHeartbeat(st)
 }
 
 func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.StreamToolCall) (agent.ToolResult, error) {
@@ -337,7 +398,7 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 	toolCallEntry, err := s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 		RunID:   st.run.ID,
 		Kind:    "tool_call",
-		Status:  "done",
+		Status:  "running",
 		Title:   call.Name,
 		Content: summarizeToolCall(call),
 		Meta:    cloneMap(call.Arguments),
@@ -345,8 +406,16 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
+	st.setProgress("running " + strings.TrimSpace(call.Name))
+	s.publishSessionHeartbeat(st)
+	finishToolCall := func(status string) {
+		_, _ = s.sessions.UpdateEntry(st.run.SessionID, toolCallEntry.ID, func(entry *SessionEntry) {
+			entry.Status = status
+		})
+	}
 	if st.run.Mode == "plan" && isMutatingCall(call) {
 		blocked := map[string]any{"ok": false, "blocked": true, "reason": "mutating tools are disabled in plan mode"}
+		finishToolCall("done")
 		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 			RunID:   st.run.ID,
 			Kind:    "system",
@@ -358,7 +427,52 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 				"entry_id":  toolCallEntry.ID,
 			},
 		})
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "tool_result",
+			Status:  "done",
+			Title:   call.Name,
+			Content: formatToolOutput(blocked),
+			Meta: map[string]any{
+				"tool_call_entry_id": toolCallEntry.ID,
+			},
+		})
+		st.setProgress("blocked by plan mode")
+		s.publishSessionHeartbeat(st)
 		return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
+	}
+	if blocked, reason := s.previewFirstBlocked(st.run.SessionID, call); blocked {
+		result := map[string]any{
+			"ok":                 false,
+			"blocked":            true,
+			"preview_preference": "enabled",
+			"reason":             reason,
+		}
+		finishToolCall("done")
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "system",
+			Status:  "done",
+			Title:   "preview mode",
+			Content: reason,
+			Meta: map[string]any{
+				"tool_name": call.Name,
+				"entry_id":  toolCallEntry.ID,
+			},
+		})
+		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+			RunID:   st.run.ID,
+			Kind:    "tool_result",
+			Status:  "done",
+			Title:   call.Name,
+			Content: formatToolOutput(result),
+			Meta: map[string]any{
+				"tool_call_entry_id": toolCallEntry.ID,
+			},
+		})
+		st.setProgress("preview-first block: run preview workflow")
+		s.publishSessionHeartbeat(st)
+		return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: result}, nil
 	}
 	if modeNeedsApproval(st.run.Mode, call) {
 		approvalKey := approvedCallKey(call)
@@ -377,11 +491,14 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 					"approval_id": approval.ID,
 				},
 			})
+			st.setProgress("waiting for approval: " + strings.TrimSpace(call.Name))
+			s.publishSessionHeartbeat(st)
 			resolution, err := s.sessions.WaitForApproval(ctx, approval.ID)
 			if err != nil {
 				return agent.ToolResult{}, err
 			}
 			if resolution.Status != "approved" {
+				finishToolCall("done")
 				_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 					RunID:   st.run.ID,
 					Kind:    "approval",
@@ -393,6 +510,18 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 					},
 				})
 				blocked := map[string]any{"ok": false, "rejected": true, "reason": firstNonEmptyString(resolution.Note, "user rejected the action")}
+				_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
+					RunID:   st.run.ID,
+					Kind:    "tool_result",
+					Status:  "done",
+					Title:   call.Name,
+					Content: formatToolOutput(blocked),
+					Meta: map[string]any{
+						"tool_call_entry_id": toolCallEntry.ID,
+					},
+				})
+				st.setProgress("waiting for next step after rejection")
+				s.publishSessionHeartbeat(st)
 				return agent.ToolResult{ToolCallID: call.ID, CallID: call.CallID, Output: blocked}, nil
 			}
 			st.markApprovedCall(approvalKey)
@@ -406,10 +535,13 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 					"approval_id": approval.ID,
 				},
 			})
+			st.setProgress("approval granted, running " + strings.TrimSpace(call.Name))
+			s.publishSessionHeartbeat(st)
 		}
 	}
 	output, err := s.runTool(ctx, call)
 	if err != nil {
+		finishToolCall("failed")
 		_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 			RunID:   st.run.ID,
 			Kind:    "tool_result",
@@ -417,8 +549,11 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 			Title:   call.Name,
 			Content: err.Error(),
 		})
+		st.setProgress("tool failed: " + strings.TrimSpace(call.Name))
+		s.publishSessionHeartbeat(st)
 		return agent.ToolResult{}, err
 	}
+	finishToolCall("done")
 	_, _ = s.sessions.CreateEntry(st.run.SessionID, SessionEntry{
 		RunID:   st.run.ID,
 		Kind:    "tool_result",
@@ -457,6 +592,8 @@ func (s *RunService) executeTool(ctx context.Context, st *runState, call agent.S
 			Content: verify,
 		})
 	}
+	st.setProgress("completed " + strings.TrimSpace(call.Name))
+	s.publishSessionHeartbeat(st)
 	return agent.ToolResult{
 		ToolCallID: call.ID,
 		CallID:     call.CallID,
@@ -512,10 +649,14 @@ func (s *RunService) requestUserInput(ctx context.Context, st *runState, call ag
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
+	st.setProgress("waiting for your answer")
+	s.publishSessionHeartbeat(st)
 	answer, err := s.sessions.WaitForQuestion(ctx, questionIDFromMeta(entry.Meta))
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
+	st.setProgress("received your answer")
+	s.publishSessionHeartbeat(st)
 	return agent.ToolResult{
 		ToolCallID: call.ID,
 		CallID:     call.CallID,
@@ -732,6 +873,33 @@ func (st *runState) publish(typ string, data any) {
 	st.mu.Unlock()
 }
 
+func (s *RunService) runHeartbeat(ctx context.Context, st *runState) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.publishSessionHeartbeat(st)
+		}
+	}
+}
+
+func (s *RunService) publishSessionHeartbeat(st *runState) {
+	hub, ok := s.sessions.Hub(st.run.SessionID)
+	if !ok {
+		return
+	}
+	status, summary, updatedAt := st.progressSnapshot()
+	hub.Publish("run.heartbeat", map[string]any{
+		"run_id":  st.run.ID,
+		"status":  status,
+		"summary": summary,
+		"at":      updatedAt,
+	})
+}
+
 func (st *runState) snapshot() Run {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -742,6 +910,33 @@ func (st *runState) setStatus(status string) {
 	st.mu.Lock()
 	st.run.Status = status
 	st.mu.Unlock()
+}
+
+func (st *runState) setProgress(summary string) {
+	clean := strings.TrimSpace(summary)
+	if clean == "" {
+		clean = "working"
+	}
+	st.mu.Lock()
+	st.progressSummary = clean
+	st.progressAt = time.Now().UTC()
+	st.mu.Unlock()
+}
+
+func (st *runState) progressSnapshot() (status string, summary string, at string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	status = strings.TrimSpace(st.run.Status)
+	summary = strings.TrimSpace(st.progressSummary)
+	if summary == "" {
+		summary = "working"
+	}
+	when := st.progressAt
+	if when.IsZero() {
+		when = time.Now().UTC()
+	}
+	at = when.UTC().Format(time.RFC3339Nano)
+	return status, summary, at
 }
 
 func (st *runState) setError(msg string) {
@@ -886,6 +1081,126 @@ func formatToolOutput(output map[string]any) string {
 	return string(data)
 }
 
+func runFailureMessage(err error) string {
+	message := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "websocket write error") ||
+		strings.Contains(lower, "websocket read error") ||
+		strings.Contains(lower, "connection reset by peer") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "keepalive ping timeout") {
+		return "provider connection was interrupted. retry the message."
+	}
+	if strings.Contains(lower, "context canceled") {
+		return "run cancelled"
+	}
+	if message == "" {
+		return "run failed"
+	}
+	return message
+}
+
+func (s *RunService) previewFirstBlocked(sessionID string, call agent.StreamToolCall) (bool, string) {
+	if !isMutatingCall(call) {
+		return false, ""
+	}
+	snapshot, ok := s.sessions.Get(sessionID)
+	if !ok {
+		return false, ""
+	}
+	if strings.ToLower(strings.TrimSpace(snapshot.Session.PreviewPreference)) != "enabled" {
+		return false, ""
+	}
+	if isPreviewScopedMutation(call) {
+		return false, ""
+	}
+	return true, "preview-first is enabled; apply changes in hyprland preview files and validate with preview_control before direct system implementation"
+}
+
+func isPreviewScopedMutation(call agent.StreamToolCall) bool {
+	switch call.Name {
+	case "preview_control", "edit_preview_dockerfile":
+		return true
+	case "apply_patch":
+		filePath := strings.TrimSpace(asString(call.Arguments["file_path"]))
+		if filePath == "" {
+			return false
+		}
+		return isPathUnderHyprland(filePath)
+	default:
+		return false
+	}
+}
+
+func isPathUnderHyprland(path string) bool {
+	absPath, ok := absolutePath(path)
+	if !ok {
+		return false
+	}
+	hyprlandRoot := detectHyprlandRoot()
+	if hyprlandRoot == "" {
+		return false
+	}
+	rel, err := filepath.Rel(hyprlandRoot, absPath)
+	if err != nil {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	return rel != "." && rel != "" && !strings.HasPrefix(rel, "..")
+}
+
+func absolutePath(path string) (string, bool) {
+	cleaned := strings.TrimSpace(path)
+	if cleaned == "" {
+		return "", false
+	}
+	if strings.HasPrefix(cleaned, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			if cleaned == "~" {
+				cleaned = home
+			} else if strings.HasPrefix(cleaned, "~/") {
+				cleaned = filepath.Join(home, strings.TrimPrefix(cleaned, "~/"))
+			}
+		}
+	}
+	if filepath.IsAbs(cleaned) {
+		return filepath.Clean(cleaned), true
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(filepath.Join(cwd, cleaned)), true
+}
+
+func detectHyprlandRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil || cwd == "" {
+		return ""
+	}
+	candidates := []string{cwd}
+	if parent := filepath.Dir(cwd); parent != cwd {
+		candidates = append(candidates, parent)
+		if grandParent := filepath.Dir(parent); grandParent != parent {
+			candidates = append(candidates, grandParent)
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		hyprlandDir := filepath.Join(candidate, "hyprland")
+		if info, statErr := os.Stat(filepath.Join(hyprlandDir, "run.sh")); statErr == nil && !info.IsDir() {
+			return hyprlandDir
+		}
+	}
+	return ""
+}
+
 func isMutatingCall(call agent.StreamToolCall) bool {
 	switch call.Name {
 	case "apply_patch", "install_package", "set_color_mode", "edit_preview_dockerfile":
@@ -899,8 +1214,19 @@ func isMutatingCall(call agent.StreamToolCall) bool {
 			return true
 		}
 		switch command {
-		case "ls", "pwd", "cat", "find", "rg", "grep", "head", "tail", "wc", "echo":
+		case "ls", "pwd", "cat", "find", "rg", "grep", "head", "tail", "wc", "echo", "stat", "which":
 			return false
+		case "bash", "sh", "zsh":
+			args, _ := call.Arguments["args"].([]interface{})
+			if len(args) < 2 {
+				return true
+			}
+			flag := strings.TrimSpace(asString(args[0]))
+			script := strings.TrimSpace(asString(args[1]))
+			if (flag == "-c" || flag == "-lc") && isReadOnlyShellScript(script) {
+				return false
+			}
+			return true
 		case "git":
 			args, _ := call.Arguments["args"].([]interface{})
 			if len(args) == 0 {
@@ -914,6 +1240,32 @@ func isMutatingCall(call agent.StreamToolCall) bool {
 	default:
 		return false
 	}
+}
+
+func isReadOnlyShellScript(script string) bool {
+	snippet := strings.ToLower(strings.TrimSpace(script))
+	if snippet == "" {
+		return false
+	}
+	mutatingTokens := []string{
+		"| tee", " sudo ", " rm ", " mv ", " cp ", " install ", " touch ", " mkdir ", " rmdir ", " chmod ", " chown ", " ln ",
+		" pacman ", " apt ", " apt-get ", " dnf ", " yum ", " zypper ", " paru ", " yay ", " pip ", " npm ", " pnpm ", " yarn ",
+		" sed -i", " perl -i", " awk -i",
+		"git add", "git commit", "git push", "git checkout", "git reset", "apply_patch", "set_color_mode", "install_package",
+	}
+	normalized := " " + strings.ReplaceAll(strings.ReplaceAll(snippet, "\n", " "), "\t", " ") + " "
+	for _, token := range mutatingTokens {
+		if strings.Contains(normalized, token) {
+			return false
+		}
+	}
+	readOnlyHints := []string{" ls", " pwd", " cat", " find", " rg", " grep", " head", " tail", " wc", " which", " stat", " sort", " cut", " tr", " uniq", " sed", " awk", "printf", "echo", "read_file"}
+	for _, hint := range readOnlyHints {
+		if strings.Contains(normalized, hint+" ") || strings.HasSuffix(strings.TrimSpace(normalized), strings.TrimSpace(hint)) {
+			return true
+		}
+	}
+	return false
 }
 
 func needsApproval(call agent.StreamToolCall) bool {

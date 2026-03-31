@@ -3,12 +3,21 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/wowtuff/ricing/tools"
 	"github.com/wowtuff/ricing/utils"
+)
+
+const (
+	providerReadTimeout  = 180 * time.Second
+	providerWriteTimeout = 20 * time.Second
 )
 
 // runoptions carries per-run overrides — backend selection, model, and credentials.
@@ -133,6 +142,7 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 			req.Reasoning = &wsReasoning{Effort: effort}
 		}
 
+		_ = conn.SetWriteDeadline(time.Now().Add(providerWriteTimeout))
 		if err := conn.WriteJSON(req); err != nil {
 			return utils.LogError("websocket write error: %s", err)
 		}
@@ -142,8 +152,12 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 		done := false
 
 		for !done {
+			_ = conn.SetReadDeadline(time.Now().Add(providerReadTimeout))
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
+				if isProviderTimeout(err) {
+					return utils.LogError("provider stream timed out waiting for data")
+				}
 				return utils.LogError("websocket read error: %s", err)
 			}
 			var event wsEvent
@@ -195,6 +209,17 @@ func RunStream(ctx context.Context, reg *tools.Registry, opts RunOptions, userPr
 		}
 		previousResponseID = &responseID
 	}
+}
+
+func isProviderTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "i/o timeout")
 }
 
 // runstreamrest handles the agentic loop for all non-chatgpt backends, it calls Complete in a loop, forwarding deltas and tool calls to the sink

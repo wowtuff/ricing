@@ -50,3 +50,14 @@ websocket write error: write tcp 10.8.0.3:45766->172.64.155.209:443: write: brok
 websocket read error: websocket: close 1011 (internal server error): keepalive ping timeout
 websocket read error: websocket: close 1011 (internal server error): keepalive ping timeout
 websocket read error: websocket: close 1011 (internal server error): keepalive ping timeout
+websocket write error: write tcp 10.8.0.3:59508->104.18.32.47:443: write: broken pipe
+websocket dial error: read tcp 10.8.0.3:39820->172.64.155.209:443: read: connection reset by peer
+websocket write error: write tcp 10.8.0.3:40568->172.64.155.209:443: write: broken pipe
+websocket write error: write tcp 10.8.0.3:36372->104.18.32.47:443: write: broken pipe
+websocket write error: write tcp 10.8.0.3:60164->172.64.155.209:443: write: broken pipe
+websocket dial error: read tcp 10.8.0.3:55514->172.64.155.209:443: read: connection reset by peer
+websocket dial error: read tcp 10.8.0.3:54814->172.64.155.209:443: read: connection reset by peer
+websocket write error: write tcp 10.8.0.3:32788->104.18.32.47:443: write: broken pipe
+websocket write error: write tcp 10.8.0.3:35918->104.18.32.47:443: write: broken pipe
+websocket write error: write tcp 172.16.99.243:56528->172.64.155.209:443: write: connection timed out
+websocket write error: write tcp 172.16.99.243:58728->172.64.155.209:443: write: broken pipe

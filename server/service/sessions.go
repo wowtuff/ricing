@@ -604,9 +604,13 @@ func (s *SessionService) AnswerQuestion(sessionID, questionID, optionID string) 
 		st.snapshot.Session.LatestEntryID = entry.ID
 		st.snapshot.Session.LatestPreview = trimPreview(answer.Answer)
 		if questionKindFromMeta(entry.Meta) == "preview_preference" {
-			st.snapshot.Session.PreviewPreference = previewPreferenceFromOption(answer.OptionID)
+			if preference := previewPreferenceFromAnswer(answer); preference != "" {
+				st.snapshot.Session.PreviewPreference = preference
+			}
 			if st.snapshot.Session.PreviewPreference == "disabled" {
 				st.snapshot.Session.PreviewStatus = "skipped"
+			} else if st.snapshot.Session.PreviewPreference == "enabled" && strings.TrimSpace(st.snapshot.Session.PreviewStatus) == "" {
+				st.snapshot.Session.PreviewStatus = "pending"
 			}
 		}
 		if err := s.saveStateLocked(st); err != nil {
@@ -981,14 +985,30 @@ func normalizePreviewPreference(input string) string {
 }
 
 func previewPreferenceFromOption(optionID string) string {
-	switch strings.ToLower(strings.TrimSpace(optionID)) {
+	normalized := strings.ToLower(strings.TrimSpace(optionID))
+	switch normalized {
 	case "preview_first", "enabled", "yes", "preview", "show_preview":
 		return "enabled"
 	case "apply_directly", "disabled", "no", "skip_preview", "skip":
 		return "disabled"
 	default:
-		return "disabled"
+		if strings.Contains(normalized, "preview") || strings.Contains(normalized, "show") {
+			return "enabled"
+		}
+		if strings.Contains(normalized, "direct") || strings.Contains(normalized, "skip") || strings.Contains(normalized, "apply") {
+			return "disabled"
+		}
+		return ""
 	}
+}
+
+func previewPreferenceFromAnswer(answer QuestionAnswer) string {
+	for _, candidate := range []string{answer.OptionID, answer.Label, answer.Answer} {
+		if preference := previewPreferenceFromOption(candidate); preference != "" {
+			return preference
+		}
+	}
+	return ""
 }
 
 func questionIDFromMeta(meta map[string]any) string {

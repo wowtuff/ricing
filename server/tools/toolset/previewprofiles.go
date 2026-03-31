@@ -27,7 +27,7 @@ func previewProfiles() map[string]previewProfile {
 			Distro:         "arch",
 			Desktop:        "hyprland",
 			SessionType:    "wayland",
-			DockerfilePath: filepath.Join(root, "hyprland", "Dockerfile"),
+			DockerfilePath: filepath.Join(root, "hyprland", "profiles", "arch-hyprland", "Dockerfile"),
 			DefaultGroup:   "desktop",
 		},
 		"arch-i3": {

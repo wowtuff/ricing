@@ -1,12 +1,13 @@
 FROM archlinux:latest
 
 RUN printf '%s\n' \
-    'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
-    'Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch' \
+    'Server = http://142.0.200.124/archlinux/$repo/os/$arch' \
+    'Server = http://194.156.163.63/archlinux/$repo/os/$arch' \
+    'Server = http://180.150.156.88/archlinux/$repo/os/$arch' \
     > /etc/pacman.d/mirrorlist
 
 RUN pacman-key --init && pacman-key --populate archlinux
-RUN pacman -Syyu --noconfirm --disable-download-timeout && pacman -S --noconfirm --disable-download-timeout \
+RUN pacman -Sy --noconfirm --disable-download-timeout archlinux-keyring && pacman -S --noconfirm --disable-download-timeout \
     bash \
     sudo \
     dbus \
@@ -34,12 +35,44 @@ RUN pacman -Syyu --noconfirm --disable-download-timeout && pacman -S --noconfirm
     noto-fonts-emoji \
     plasma-desktop \
     plasma-workspace \
-    konsole \
-    dolphin \
-    breeze \
-    breeze-gtk \
-    breeze-icons \
-    qqc2-desktop-style
+    conky \
+    htop \
+    wmctrl \
+    xdotool
+
+RUN pacman-key --init && pacman-key --populate archlinux
+RUN pacman -Sy --noconfirm --disable-download-timeout archlinux-keyring && pacman -S --noconfirm --disable-download-timeout \
+    bash \
+    sudo \
+    dbus \
+    curl \
+    git \
+    python \
+    python-pip \
+    ca-certificates \
+    xorg-server-xvfb \
+    x11vnc \
+    xorg-xauth \
+    xorg-xrdb \
+    xorg-xsetroot \
+    xterm \
+    dmenu \
+    jack2 \
+    firefox \
+    kitty \
+    fastfetch \
+    mesa \
+    xdg-user-dirs \
+    ttf-dejavu \
+    ttf-jetbrains-mono \
+    noto-fonts \
+    noto-fonts-emoji \
+    plasma-desktop \
+    plasma-workspace \
+    conky \
+    htop \
+    wmctrl \
+    xdotool
 RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && locale-gen && echo "LANG=en_US.UTF-8" > /etc/locale.conf
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
