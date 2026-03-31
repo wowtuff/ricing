@@ -6,21 +6,30 @@
 Agentic Ricing
 ==============
 
-Agentic Ricing is a local-first AI agent runtime that integrates a daemon,
-CLI, and browser UI to orchestrate model-based workflows with persistence,
-tool execution, and multi-provider support.
+Agentic Ricing is an AI-powered Linux ricing system that helps users inspect,
+plan, preview, and apply desktop customization changes on their real machine.
+
+It combines:
+
+- a local daemon
+- a browser interface
+- a CLI client
+- an agent runtime with tool execution
+- support for package installation, config patching, command execution, and theme changes
 
 .. toctree::
    :maxdepth: 2
 
-   overview
-   installation
-   architecture
-   usage
+   introduction
+   quickstart
+   concept
+   workflow
+   tools
+   webui
    cli
+   architecture
    providers
    api
-   internals
    reproduction
    limitations
    contribution
