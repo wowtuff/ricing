@@ -49,6 +49,11 @@ cd ricing/server
 go mod tidy
 ```
 
+## to start backend and ui together
+```bash
+go run cmd/ricingd/main.go --ui-dir cmd/server/ui
+```
+
 ### Start the backend
 
 ```bash
@@ -60,6 +65,7 @@ The daemon runs by default at:
 ```text
 http://127.0.0.1:1777
 ```
+
 
 ### Start the web UI
 
