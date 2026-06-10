@@ -1,5 +1,16 @@
 # Agentic Ricing
 
+
+
+
+https://github.com/user-attachments/assets/79aa7f6b-5caa-4c67-a5cd-7857115cca04
+
+
+
+
+
+
+
 ## Documentation
 
 Full documentation is available here:
